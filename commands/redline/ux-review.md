@@ -137,34 +137,43 @@ This is the capstone law. Evaluate AFTER all other laws. Imagine you're demoing 
 
 ### 3. Output Format
 
+Default to the **skim summary**. Keep it short. Plain English. No law numbers in the headline lines unless the user asks for detail (or passes `--full`).
+
 ```
 ## UX Review: [Component/Page Name]
 
-### Findings
+**Verdict:** [one short sentence — is this good, okay, or broken?]
 
-**Violations (must fix):**
-- [Law/Principle #]: [Specific issue]. [What to change].
+**Fix now (N):**
+- [Plain-English issue]. [One-line fix]. — `file:line`
+- ...
 
-**Flags (consider fixing):**
-- [Law/Principle #]: [Concern]. [Suggestion].
+**Worth a look (N):**
+- [Plain-English concern]. — `file:line`
+- ...
 
-**Passes (well done):**
-- [Law/Principle #]: [What's working and why].
+**Working well (N):**
+- [What's good, in one short phrase]
+- ...
 
-**Methods to Consider:**
-- [Method #]: [Why this method would help here].
-
-### Summary
-[1-2 sentences: overall assessment and top priority fix]
+**Top priority:** [one sentence — the single most important thing to do next]
 ```
+
+Rules for the skim format:
+- One line per item. No paragraphs.
+- Plain English first. The law name in parens at the end only if it adds clarity, e.g. `Dropdown has 12 options with no default (Hick's Law)`.
+- Cap each section at ~5 items. If there are more, list the top 5 and add `+N more — ask for --full`.
+- Skip "Methods to consider" in skim mode unless one is critical.
+- No preamble, no closing fluff. Just the report.
+
+If the user passes `--full` (or asks for detail), expand to the long format with every law cited by number, methods section, and pass justifications.
 
 ### 4. Rules
 
-- **Be specific.** "Hick's Law (#4): 8 options in the dropdown" not "too many choices."
-- **Cite the law by name and number.** Every finding references a specific law.
-- **Prioritize.** Violations first, flags second, passes last.
+- **Skim by default.** Long form only on request.
+- **Be specific but brief.** "12 options in the dropdown, no default" beats "too many choices" and beats a paragraph.
+- **Prioritize.** Fix-now first, worth-a-look second, working-well last.
 - **No fluff.** Skip laws that don't apply. Don't pad with praise.
-- **Reference the file.** Include `file_path:line_number` for code-level findings.
-- **Propose fixes.** Every violation includes a concrete recommendation.
-- **Recommend methods.** When a UX Method would help validate a decision, suggest it.
-- **Read the full reference** (`~/.claude/docs/UX_AUDIT_FRAMEWORK.md`) for any law you need deeper context on before scoring.
+- **Reference the file.** `file_path:line_number` on every finding.
+- **Every fix-now needs a one-line fix.** No diagnoses without remedies.
+- **Read the full reference** (`~/.claude/docs/UX_AUDIT_FRAMEWORK.md`) for any law you're unsure about before scoring — but the user-facing report stays short.
