@@ -358,6 +358,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     const elementText = isArea
       ? null
       : selectedEl!.textContent?.slice(0, 200) || null
+    const pageUrl = window.location.pathname + window.location.search + window.location.hash
 
     try {
       console.log('[redline] submit: includeScreenshot=', includeScreenshot, 'canvasRef=', !!screenshotCanvasRef.current)
@@ -370,7 +371,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
       if (screenshotBlob) {
         const formData = new FormData()
-        formData.append('page_url', window.location.pathname)
+        formData.append('page_url', pageUrl)
         formData.append('element_selector', selectorStr)
         formData.append('element_text', elementText || '')
         formData.append('feedback', feedback.trim())
@@ -382,7 +383,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            page_url: window.location.pathname,
+            page_url: pageUrl,
             element_selector: selectorStr,
             element_text: elementText,
             feedback: feedback.trim(),
@@ -412,6 +413,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
   // Compute area selection rect for rendering
   const areaNorm = areaRect ? normalizeArea(areaRect) : null
+
+  // Current page URL — shown in the feedback modal and saved with every redline
+  const pageUrl =
+    typeof window !== 'undefined'
+      ? window.location.pathname + window.location.search + window.location.hash
+      : ''
 
   // Dimensions tooltip for area drag
   const dimLabel = areaNorm && dragging ? `${areaNorm.w} × ${areaNorm.h}` : null
@@ -659,6 +666,43 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               >
                 &times;
               </button>
+            </div>
+
+            {/* Page URL — saved with every redline */}
+            <div
+              data-redline-ui
+              title={pageUrl}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                color: '#888',
+                marginBottom: 8,
+                fontFamily: 'monospace',
+                padding: '6px 8px',
+                backgroundColor: '#111',
+                borderRadius: 6,
+              }}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#ef4444"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flexShrink: 0 }}
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {pageUrl}
+              </span>
             </div>
 
             {/* Element selector (element mode) */}
