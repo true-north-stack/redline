@@ -23,7 +23,11 @@ Route to the appropriate redline subcommand based on the argument:
 
 Storage: `redline/feedback.json` in the project root — a JSON array of redline objects.
 
-Each redline object has: `id`, `page_url`, `element_selector`, `element_text`, `feedback`, `screenshot_path`, `status` (open|fixed|dismissed|deferred), `created_at`.
+Each redline object has: `id`, `page_url`, `element_selector`, `element_text`, `feedback`, `screenshot_path`, `status` (open|fixed|dismissed|deferred), `created_at`. Newer items also carry `ux_review_requested`, `tester_id`, `app_version`, `user_agent` and `expires_at`.
+
+Masked content appears as `[redacted]` in `element_text` and as black boxes in screenshots. Query values in `page_url` are saved as `…`. Don't try to recover any of it.
+
+If the project stores redlines in Supabase (`storage: 'supabase'` in `redline.config.ts`), run `node --env-file=.env redline/redline.mjs pull` first to copy them into `redline/feedback.json`.
 
 Screenshots are stored in `redline/screenshots/` in the project root. When a redline has a screenshot, `screenshot_path` points to it (e.g., `redline/screenshots/{id}.png`). Read the screenshot when fixing to understand the visual context.
 

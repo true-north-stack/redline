@@ -4,7 +4,7 @@
 
 ![Redline in action](assets/redline-screenshot.png)
 
-In-app dev feedback for AI-assisted development. No database — just a JSON file.
+In-app dev feedback for AI-assisted development. A JSON file by default; your own Supabase project when testers are remote.
 
 ## How It Works
 
@@ -55,7 +55,9 @@ A mode indicator pill at the top of the screen shows which mode is active. Press
 - **Area screenshots** — drag to capture any region of the page with live dimension overlay
 - **Screenshot preview** — area captures show a preview in the feedback modal before submit
 - **Request UX Audit** — opt-in 55-point audit including the Steve Jobs Pitch
-- **Flat file** — `redline/feedback.json`. No database
+- **Flat file by default** — `redline/feedback.json`. Opt into Supabase for remote testers
+- **PHI masking** — `[data-phi]` and your own selectors are blacked out before anything leaves the browser
+- **Retention** — feedback and screenshots expire after 30 days (configurable)
 - **Batch fix** — 10 redlines? One command
 - **`initialMode` prop** — launch the inspector directly into area mode programmatically
 
@@ -84,8 +86,100 @@ Is it pitch ready? Will SJ fire us? What questions will he ask? What gaps will h
   onDeactivate={() => void}  // Called when the inspector should close
   apiUrl="/api/redlines"     // API endpoint for submitting feedback (default: /api/redlines)
   initialMode="element"      // Starting mode: 'element' or 'area' (default: element)
+  phiSelectors={redlineConfig.phiSelectors} // Extra selectors to mask, on top of [data-phi]
 />
 ```
+
+## Config
+
+One file in the project root, `redline.config.ts`, read by the API route and the inspector:
+
+```ts
+import { defineRedlineConfig } from './components/redline-config'
+
+export default defineRedlineConfig({
+  storage: 'local',                 // 'local' (default) or 'supabase'
+  supabase: {                       // Supabase mode only. Server-only env vars, never NEXT_PUBLIC_*
+    url: process.env.SUPABASE_URL,
+    secretKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    bucket: 'redline-screenshots',
+  },
+  phiSelectors: ['.client-name'],   // masked in addition to [data-phi]
+  retentionDays: 30,                // feedback + screenshots expire after this
+  appVersion: process.env.NEXT_PUBLIC_APP_VERSION,
+})
+```
+
+Every redline saves `page_url`, `element_selector`, `element_text`, `feedback`, `screenshot_path`, `status`, `created_at`, plus `tester_id`, `app_version`, `user_agent` (browser and OS), `ux_review_requested` and `expires_at`.
+
+## PHI Masking
+
+Before a screenshot or element text is captured, every element matching `[data-phi]` or one of `phiSelectors` is replaced. Screenshots get a solid black box of the same size, and captured text gets `[redacted]`. This happens in the browser, so unmasked content never reaches the network or disk. If masking fails for any reason (a bad selector, say), the screenshot and element text are dropped instead of being sent.
+
+```tsx
+<span data-phi>{client.name}</span>
+```
+
+- Page URLs keep the path and query keys only: `/clients?q=Jane` is saved as `/clients?q=…`, and token fragments such as `#access_token=…` are dropped. The server re-sanitizes too.
+- Masking only covers elements you tag. Tag anything that can show patient or personal data before testers see it.
+- The feedback text is whatever the tester types. The modal reminds them not to type patient details, but Redline can't mask it.
+- Elements inside shadow DOM aren't matched by the selectors.
+
+## Storage
+
+### Local (default)
+
+`redline/feedback.json` plus `redline/screenshots/`, written by your API route. Local storage never runs a purge on its own; to enforce retention, run:
+
+```bash
+node redline/redline.mjs purge            # delete items past their expires_at, plus screenshots
+node redline/redline.mjs purge --days 7   # or anything older than 7 days
+```
+
+Keep local mode out of deployed environments: it writes to the server's filesystem without authentication.
+
+### Supabase (opt-in)
+
+For testers on a deployed build. Feedback goes into the host's own Supabase project, in a dedicated `feedback` schema and a private `redline-screenshots` bucket.
+
+- **Writes go through your API route on the server**, using the secret key. The key never reaches the browser.
+- **Testers can't read anything back.** `anon` and `authenticated` get no grants, RLS is on with no policies, and the bucket has no storage policies. `GET /api/redlines` returns 404 in this mode.
+- **Every write needs a tester.** Implement `getTesterId()` in the route from your own server-side session. Requests without one get a 401.
+
+Setup:
+
+1. Copy `supabase/migrations/*.sql` into your migrations (rename them with your own timestamps) and apply them.
+2. Add `feedback` to the exposed schemas: Dashboard → Data API settings, or `schemas = [..., "feedback"]` under `[api]` in `config.toml`.
+3. Deploy the purge function: copy `supabase/functions/redline-purge/`, then `supabase functions deploy redline-purge --no-verify-jwt`.
+4. Pick a long random string and set it in both places:
+   ```bash
+   supabase secrets set REDLINE_PURGE_SECRET=<secret>
+   ```
+   ```sql
+   select vault.create_secret('https://<project-ref>.supabase.co', 'redline_purge_base_url');
+   select vault.create_secret('<secret>', 'redline_purge_secret');
+   ```
+5. Set `storage: 'supabase'` in `redline.config.ts`.
+
+The migration schedules `redline-purge` daily at 03:17 UTC with pg_cron. It deletes expired screenshots through the Storage API, then the rows. Deleting from `storage.objects` in SQL would leave the files behind. Retention is stamped on each item as `expires_at` when it's saved, so changing `retentionDays` affects new feedback only.
+
+To work through remote feedback with Claude, pull it into the local file first:
+
+```bash
+node --env-file=.env redline/redline.mjs pull   # needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+```
+
+`/redline check`, `/redline fix` and the rest then work as usual. Status changes stay local.
+
+## Development
+
+```bash
+pnpm install
+pnpm test        # Playwright: PHI masking (real browser), local storage, CLI, URL sanitizing
+pnpm typecheck
+```
+
+The Supabase tests run against a live stack when `REDLINE_SB_URL`, `REDLINE_SB_SECRET`, `REDLINE_SB_PUBLIC` and `REDLINE_SB_PURGE_SECRET` are set; see `tests/supabase.spec.ts`.
 
 ## Install
 
