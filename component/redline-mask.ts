@@ -2,8 +2,9 @@
 // masked content is blacked out in the screenshot clone and replaced in captured
 // text, so it never leaves the page.
 //
-// Limitation: elements inside shadow roots aren't matched by querySelectorAll, so
-// they aren't masked.
+// The screenshot library renders open shadow roots and same-origin iframes, so
+// targets are found across both. Closed shadow roots and cross-origin iframes
+// aren't rendered at all, so there's nothing in them to leak.
 
 const MARK = 'data-redline-mask'
 const REDACTED = '[redacted]'
@@ -18,8 +19,40 @@ interface Target {
 /** Masked elements inside (or containing) root. If root sits inside a masked element, root itself is the target. */
 function findTargets(root: Element, selectors: string[]): Element[] {
   const selector = selectors.join(',')
-  if (root.closest(selector)) return [root]
-  return Array.from(root.querySelectorAll(selector))
+  if (insideMasked(root, selector)) return [root]
+  const found: Element[] = []
+  collect(root, selector, found, true)
+  return found
+}
+
+/** Matches in scope, descending into open shadow roots and same-origin iframes. */
+function collect(scope: Element | ShadowRoot | Document, selector: string, out: Element[], includeSelf = false) {
+  const els = Array.from(scope.querySelectorAll('*'))
+  if (includeSelf && scope instanceof Element) els.unshift(scope)
+  for (const el of els) {
+    if (el !== scope && el.matches(selector)) out.push(el)
+    if (el.shadowRoot) collect(el.shadowRoot, selector, out)
+    if (el instanceof HTMLIFrameElement) {
+      let doc: Document | null = null
+      try {
+        doc = el.contentDocument
+      } catch {
+        // cross-origin: not rendered by the screenshot library
+      }
+      if (doc) collect(doc, selector, out)
+    }
+  }
+}
+
+/** closest() that climbs out of shadow roots and iframes. */
+function insideMasked(el: Element, selector: string): boolean {
+  let node: Element | null = el
+  while (node) {
+    if (node.closest(selector)) return true
+    const root = node.getRootNode()
+    node = root instanceof ShadowRoot ? root.host : (node.ownerDocument.defaultView?.frameElement ?? null)
+  }
+  return false
 }
 
 /**

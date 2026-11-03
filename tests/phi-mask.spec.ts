@@ -27,7 +27,7 @@ test.beforeAll(async () => {
   bundle = result.outputFiles[0].text
 })
 
-function pageHtml(props: object) {
+function pageHtml(props: object, extra = '') {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><style>
   body { margin: 0; background: #ffffff; font: 16px sans-serif; }
@@ -41,6 +41,7 @@ function pageHtml(props: object) {
   <div id="card" data-testid="patient-card">
     <span data-phi class="phi">${PHI_NAME}</span>
     <span class="dob">${PHI_DOB}</span>
+    ${extra}
     <p>Visible note</p>
     <div class="control"></div>
   </div>
@@ -50,7 +51,7 @@ function pageHtml(props: object) {
 </body></html>`
 }
 
-async function openFixture(page: Page, props: object, path = '/fixture') {
+async function openFixture(page: Page, props: object, path = '/fixture', extra = '') {
   const posts: Request[] = []
   await page.route(`${ORIGIN}/**`, async (route) => {
     const req = route.request()
@@ -58,7 +59,7 @@ async function openFixture(page: Page, props: object, path = '/fixture') {
       posts.push(req)
       return route.fulfill({ status: 201, contentType: 'application/json', body: '{}' })
     }
-    return route.fulfill({ status: 200, contentType: 'text/html', body: pageHtml(props) })
+    return route.fulfill({ status: 200, contentType: 'text/html', body: pageHtml(props, extra) })
   })
   await page.goto(ORIGIN + path)
   return posts
@@ -172,6 +173,44 @@ test('selecting an element inside a masked one redacts it entirely', async ({ pa
   expect(form.get('element_text')).toBe('[redacted]')
   const colors = await countColors(page, Buffer.from(await (form.get('screenshot') as File).arrayBuffer()))
   expect(colors.green + colors.magenta).toBe(0)
+  assertNoPhiText(posts[0].postDataBuffer()!.toString('latin1'))
+})
+
+// PHI inside an open shadow root and a same-origin iframe. modern-screenshot renders
+// both, so masking has to reach across those boundaries too.
+const PHI_STYLE = 'display:block;background:#00ff00;color:#ff00ff;font-size:28px;padding:8px'
+const BOUNDARIES = `
+  <patient-chip></patient-chip>
+  <iframe id="frame" style="border:0;width:300px;height:60px"
+    srcdoc="<body style='margin:0'><span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span></body>"></iframe>
+  <script>
+    customElements.define('patient-chip', class extends HTMLElement {
+      constructor() {
+        super()
+        this.attachShadow({ mode: 'open' }).innerHTML =
+          "<span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span>"
+      }
+    })
+  </script>`
+
+test('masks PHI inside open shadow roots and same-origin iframes', async ({ page }) => {
+  const posts = await openFixture(page, { phiSelectors: ['.dob'] }, '/fixture', BOUNDARIES)
+  await page.frameLocator('#frame').locator('[data-phi]').waitFor()
+
+  const captured = page.waitForEvent('console', (m) => m.text().includes('screenshot captured'))
+  const card = (await page.locator('#card').boundingBox())!
+  await page.mouse.click(card.x + 6, card.y + 6)
+  await captured
+
+  await page.getByLabel('Include Screenshot').check()
+  await submit(page)
+  await expect.poll(() => posts.length).toBe(1)
+
+  const form = await readForm(posts[0])
+  const colors = await countColors(page, Buffer.from(await (form.get('screenshot') as File).arrayBuffer()))
+  expect(colors.green, 'PHI background pixels in screenshot').toBe(0)
+  expect(colors.magenta, 'PHI text pixels in screenshot').toBe(0)
+  expect(colors.black, 'mask boxes present').toBeGreaterThan(1000)
   assertNoPhiText(posts[0].postDataBuffer()!.toString('latin1'))
 })
 
