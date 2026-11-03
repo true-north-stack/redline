@@ -1,0 +1,23 @@
+{
+  "name": "redline-dev",
+  "private": true,
+  "description": "Dev-only tooling for Redline (tests). Host projects copy files from component/ and scripts/; they don't install this.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.0",
+    "@types/node": "22.18.6",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "esbuild": "0.25.10",
+    "lucide-react": "0.544.0",
+    "modern-screenshot": "4.6.8",
+    "next": "15.5.4",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "typescript": "5.9.2"
+  }
+}

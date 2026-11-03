@@ -3,3 +3,5 @@ node_modules/
 redline/feedback.json
 redline/screenshots/
 .DS_Store
+test-results/
+playwright-report/
