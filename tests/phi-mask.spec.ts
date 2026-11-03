@@ -181,8 +181,7 @@ test('selecting an element inside a masked one redacts it entirely', async ({ pa
 const PHI_STYLE = 'display:block;background:#00ff00;color:#ff00ff;font-size:28px;padding:8px'
 const BOUNDARIES = `
   <patient-chip></patient-chip>
-  <iframe id="frame" style="border:0;width:300px;height:60px"
-    srcdoc="<body style='margin:0'><span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span></body>"></iframe>
+  <iframe id="frame" style="border:0;width:300px;height:140px"></iframe>
   <script>
     customElements.define('patient-chip', class extends HTMLElement {
       constructor() {
@@ -191,27 +190,58 @@ const BOUNDARIES = `
           "<span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span>"
       }
     })
+    // Outer frame holds PHI plus a nested frame created from the outer frame's own realm
+    const outer = document.getElementById('frame').contentDocument
+    outer.body.style.margin = '0'
+    outer.body.innerHTML = "<span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span>"
+    const inner = outer.createElement('iframe')
+    inner.id = 'inner'
+    inner.style.cssText = 'border:0;width:300px;height:60px'
+    outer.body.appendChild(inner)
+    inner.contentDocument.body.style.margin = '0'
+    inner.contentDocument.body.innerHTML = "<span data-phi style='${PHI_STYLE}'>${PHI_NAME}</span>"
   </script>`
 
-test('masks PHI inside open shadow roots and same-origin iframes', async ({ page }) => {
-  const posts = await openFixture(page, { phiSelectors: ['.dob'] }, '/fixture', BOUNDARIES)
-  await page.frameLocator('#frame').locator('[data-phi]').waitFor()
-
-  const captured = page.waitForEvent('console', (m) => m.text().includes('screenshot captured'))
+/** Click the card, wait for capture, submit with screenshot; returns the form. */
+async function captureCard(page: Page, posts: Request[], expectLog: string) {
+  const logged = page.waitForEvent('console', (m) => m.text().includes(expectLog))
   const card = (await page.locator('#card').boundingBox())!
   await page.mouse.click(card.x + 6, card.y + 6)
-  await captured
-
+  await logged
   await page.getByLabel('Include Screenshot').check()
   await submit(page)
   await expect.poll(() => posts.length).toBe(1)
+  return posts[0]
+}
 
-  const form = await readForm(posts[0])
+test('masks PHI inside open shadow roots and same-origin iframes, including nested frames', async ({ page }) => {
+  const posts = await openFixture(page, { phiSelectors: ['.dob'] }, '/fixture', BOUNDARIES)
+  const req = await captureCard(page, posts, 'screenshot captured')
+
+  const form = await readForm(req)
   const colors = await countColors(page, Buffer.from(await (form.get('screenshot') as File).arrayBuffer()))
   expect(colors.green, 'PHI background pixels in screenshot').toBe(0)
   expect(colors.magenta, 'PHI text pixels in screenshot').toBe(0)
   expect(colors.black, 'mask boxes present').toBeGreaterThan(1000)
-  assertNoPhiText(posts[0].postDataBuffer()!.toString('latin1'))
+  assertNoPhiText(req.postDataBuffer()!.toString('latin1'))
+})
+
+test('an iframe tagged [data-phi] is masked whole', async ({ page }) => {
+  const tagged = BOUNDARIES.replace('<iframe id="frame"', '<iframe data-phi id="frame"')
+  const posts = await openFixture(page, { phiSelectors: ['.dob'] }, '/fixture', tagged)
+  const req = await captureCard(page, posts, 'screenshot captured')
+
+  const form = await readForm(req)
+  const colors = await countColors(page, Buffer.from(await (form.get('screenshot') as File).arrayBuffer()))
+  expect(colors.green + colors.magenta, 'PHI pixels in screenshot').toBe(0)
+})
+
+test('fails closed: a contextual selector next to shadow or iframe content drops the screenshot', async ({ page }) => {
+  // "#card span" can't be evaluated across a shadow or frame boundary
+  const posts = await openFixture(page, { phiSelectors: ['.dob', '#card span'] }, '/fixture', BOUNDARIES)
+  const req = await captureCard(page, posts, 'screenshot dropped')
+  expect(req.headers()['content-type']).toContain('application/json')
+  assertNoPhiText(JSON.stringify(req.postDataJSON()))
 })
 
 test('fails closed: a bad selector drops the screenshot and the element text', async ({ page }) => {

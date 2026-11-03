@@ -16,32 +16,72 @@ interface Target {
   inline: boolean
 }
 
-/** Masked elements inside (or containing) root. If root sits inside a masked element, root itself is the target. */
-function findTargets(root: Element, selectors: string[]): Element[] {
-  const selector = selectors.join(',')
-  if (insideMasked(root, selector)) return [root]
-  const found: Element[] = []
-  collect(root, selector, found, true)
-  return found
+/** A live element to mark, and the element whose box the mask should cover. */
+interface Match {
+  mark: Element
+  box: Element
 }
 
-/** Matches in scope, descending into open shadow roots and same-origin iframes. */
-function collect(scope: Element | ShadowRoot | Document, selector: string, out: Element[], includeSelf = false) {
-  const els = Array.from(scope.querySelectorAll('*'))
-  if (includeSelf && scope instanceof Element) els.unshift(scope)
-  for (const el of els) {
-    if (el !== scope && el.matches(selector)) out.push(el)
-    if (el.shadowRoot) collect(el.shadowRoot, selector, out)
-    if (el instanceof HTMLIFrameElement) {
-      let doc: Document | null = null
-      try {
-        doc = el.contentDocument
-      } catch {
-        // cross-origin: not rendered by the screenshot library
-      }
-      if (doc) collect(doc, selector, out)
-    }
+// Realm-independent checks: elements inside an iframe come from that frame's own
+// window, so `instanceof HTMLIFrameElement` / `instanceof ShadowRoot` miss them.
+const isIframe = (el: Element): el is HTMLIFrameElement => el.localName === 'iframe'
+const isShadowRoot = (n: Node): n is ShadowRoot => n.nodeType === Node.DOCUMENT_FRAGMENT_NODE && 'host' in n
+
+function frameDocument(el: HTMLIFrameElement): Document | null {
+  try {
+    return el.contentDocument
+  } catch {
+    return null // cross-origin: not rendered by the screenshot library
   }
+}
+
+/**
+ * True when a selector depends on ancestors or siblings (combinators, or :host and
+ * friends). Those can't be evaluated across a shadow or frame boundary. Quoted
+ * strings and attribute brackets are ignored; anything else ambiguous counts.
+ */
+function isContextual(selector: string): boolean {
+  const bare = selector.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '').replace(/\[[^\]]*\]/g, '[]')
+  return /[\s>+~]|:host|::slotted|::part/.test(bare.trim())
+}
+
+/**
+ * Masked elements inside (or containing) root, across open shadow roots and
+ * same-origin iframes (both are rendered by the screenshot library). Throws when
+ * content behind a boundary can't be checked reliably, so the capture is dropped.
+ */
+function findTargets(root: Element, selectors: string[]): Match[] {
+  const selector = selectors.join(',')
+  if (insideMasked(root, selector)) return [{ mark: root, box: root }]
+  const contextual = selectors.some(isContextual)
+  const out: Match[] = []
+  collect(root, selector, contextual, out, true)
+  return out
+}
+
+function collect(scope: Element | ShadowRoot | Document, selector: string, contextual: boolean, out: Match[], includeSelf = false) {
+  const els = Array.from(scope.querySelectorAll('*'))
+  if (includeSelf && scope.nodeType === Node.ELEMENT_NODE) els.unshift(scope as Element)
+  for (const el of els) {
+    const matched = el.matches(selector)
+    if (isIframe(el)) {
+      const doc = frameDocument(el)
+      // The library renders a frame as a clone of its body, so that's what gets marked
+      if (matched) out.push({ mark: doc?.body ?? el, box: el })
+      else if (doc) descend(doc, selector, contextual, out)
+      continue
+    }
+    if (matched) out.push({ mark: el, box: el })
+    if (el.shadowRoot && !matched) descend(el.shadowRoot, selector, contextual, out)
+  }
+}
+
+function descend(scope: ShadowRoot | Document, selector: string, contextual: boolean, out: Match[]) {
+  const content = scope.nodeType === Node.DOCUMENT_NODE ? (scope as Document).body : scope
+  if (contextual && content?.querySelector('*')) {
+    throw new Error('[redline] a PHI selector with combinators can\'t be checked inside shadow roots or iframes')
+  }
+  collect(scope, selector, contextual, out)
 }
 
 /** closest() that climbs out of shadow roots and iframes. */
@@ -50,7 +90,7 @@ function insideMasked(el: Element, selector: string): boolean {
   while (node) {
     if (node.closest(selector)) return true
     const root = node.getRootNode()
-    node = root instanceof ShadowRoot ? root.host : (node.ownerDocument.defaultView?.frameElement ?? null)
+    node = isShadowRoot(root) ? root.host : (node.ownerDocument.defaultView?.frameElement ?? null)
   }
   return false
 }
@@ -66,13 +106,13 @@ export async function captureMasked(
   options: { backgroundColor?: string; scale?: number } = {},
 ): Promise<HTMLCanvasElement> {
   const { domToCanvas } = await import('modern-screenshot')
-  const targets: Target[] = findTargets(root, selectors).map((el) => {
-    const rect = el.getBoundingClientRect()
+  const targets: Target[] = findTargets(root, selectors).map(({ mark, box }) => {
+    const rect = box.getBoundingClientRect()
     return {
-      el,
+      el: mark,
       w: rect.width,
       h: rect.height,
-      inline: getComputedStyle(el).display === 'inline',
+      inline: mark === box && getComputedStyle(box).display === 'inline',
     }
   })
   const redacted = new Set<number>()
@@ -129,7 +169,7 @@ function redactClone(el: HTMLElement, t: Target) {
 
 /** textContent of el with masked subtrees replaced by [redacted]. */
 export function redactedText(el: HTMLElement, selectors: string[], maxLength: number): string | null {
-  const targets = findTargets(el, selectors)
+  const targets = findTargets(el, selectors).map((t) => t.mark)
   if (targets.includes(el)) return REDACTED
 
   targets.forEach((t) => t.setAttribute(MARK, ''))

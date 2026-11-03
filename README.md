@@ -123,7 +123,8 @@ Before a screenshot or element text is captured, every element matching `[data-p
 - Page URLs keep the path and query keys only: `/clients?q=Jane` is saved as `/clients?q=…`, and token fragments such as `#access_token=…` are dropped. The server re-sanitizes too.
 - Masking only covers elements you tag. Tag anything that can show patient or personal data before testers see it.
 - The feedback text is whatever the tester types. The modal reminds them not to type patient details, but Redline can't mask it.
-- Masking reaches into open shadow roots and same-origin iframes. Closed shadow roots and cross-origin iframes aren't rendered in screenshots at all.
+- Masking reaches into open shadow roots and same-origin iframes, nested ones included. Closed shadow roots and cross-origin iframes aren't rendered in screenshots at all.
+- Selectors with combinators (`.card .name`, `:host`) can't be evaluated across those boundaries, so on a page with shadow or iframe content they drop the screenshot instead of guessing. Tag the element itself (`data-phi`, or a plain class) to keep screenshots.
 
 ## Storage
 
