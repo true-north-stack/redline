@@ -82,6 +82,26 @@ test('mode prints local without remote config', async () => {
   expect(execFileSync('node', [CLI, 'mode'], { env, encoding: 'utf-8' }).trim()).toBe('local')
 })
 
+test('malformed feedback.json aborts pull, push and purge and is left byte-identical', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'redline-'))
+  await mkdir(join(root, 'redline'), { recursive: true })
+  const file = join(root, 'redline', 'feedback.json')
+  const bad = '[{"id": "x", "status": "open",'
+  await writeFile(file, bad)
+  const env = { ...process.env, REDLINE_ROOT: root, REDLINE_REMOTE_URL: 'http://127.0.0.1:9', REDLINE_SYNC_SECRET: 's' }
+  for (const cmd of ['pull', 'push', 'purge']) {
+    let failure: { status?: number; stderr?: string } | null = null
+    try {
+      execFileSync('node', [CLI, cmd], { env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) {
+      failure = e as { status?: number; stderr?: string }
+    }
+    expect(failure?.status).toBe(1)
+    expect(failure?.stderr).toContain('redline/feedback.json is not valid JSON; fix or move it, then retry.')
+    expect(await readFile(file, 'utf-8')).toBe(bad)
+  }
+})
+
 test('CLI purge: expires_at by default, --days overrides', async () => {
   const root = await mkdtemp(join(tmpdir(), 'redline-'))
   await mkdir(join(root, 'redline', 'screenshots'), { recursive: true })

@@ -15,7 +15,7 @@
 //   REDLINE_REMOTE_URL=https://<project>.supabase.co
 //   REDLINE_SYNC_SECRET=<the secret set on the redline-sync function>
 
-import { readFile, writeFile, mkdir, unlink } from 'fs/promises'
+import { readFile, writeFile, mkdir, unlink, rename } from 'fs/promises'
 import { join } from 'path'
 import { execSync } from 'child_process'
 
@@ -35,16 +35,28 @@ const feedbackPath = join(root, 'redline', 'feedback.json')
 const screenshotsDir = join(root, 'redline', 'screenshots')
 
 async function readItems() {
+  let text
   try {
-    return JSON.parse(await readFile(feedbackPath, 'utf-8'))
+    text = await readFile(feedbackPath, 'utf-8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return []
+    throw err
+  }
+  try {
+    const items = JSON.parse(text)
+    if (!Array.isArray(items)) throw new Error('not an array')
+    return items
   } catch {
-    return []
+    throw new Error('redline/feedback.json is not valid JSON; fix or move it, then retry.')
   }
 }
 
+// Write to a temp file in the same directory, then rename, so a crash never leaves a half file
 async function writeItems(items) {
   await mkdir(join(root, 'redline'), { recursive: true })
-  await writeFile(feedbackPath, JSON.stringify(items, null, 2))
+  const tmp = `${feedbackPath}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(items, null, 2))
+  await rename(tmp, feedbackPath)
 }
 
 function flag(name) {
@@ -162,10 +174,10 @@ async function downloadScreenshot(r) {
 
 async function pull() {
   const remote = await requireRemote()
+  const items = await readItems() // fail on an unreadable file before touching anything
   const { status, json } = await sync(remote, { action: 'list' })
   if (status !== 200 || !Array.isArray(json?.items)) throw new Error(`Remote list failed (${status}).`)
 
-  const items = await readItems()
   const byId = new Map(items.map((r) => [r.id, r]))
   let added = 0
   let updated = 0
