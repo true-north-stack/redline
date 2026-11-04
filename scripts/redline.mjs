@@ -3,7 +3,8 @@
 //
 //   node redline/redline.mjs purge [--days N]   Delete local redlines past retention, plus their screenshots
 //   node redline/redline.mjs mode               Print `local`, or `remote <host>` when a remote is configured
-//   node redline/redline.mjs pull               Sync the inbox into redline/feedback.json (inbox wins on conflict)
+//   node redline/redline.mjs pull               Sync the inbox into redline/feedback.json (inbox wins on conflict),
+//                                               then remove expired items and pulled items the inbox no longer has
 //   node redline/redline.mjs push               Send local status changes for pulled items to the inbox
 //
 // purge uses each item's expires_at; --days N instead deletes anything older than N days.
@@ -16,7 +17,7 @@
 //   REDLINE_SYNC_SECRET=<the secret set on the redline-sync function>
 
 import { readFile, writeFile, mkdir, unlink, rename } from 'fs/promises'
-import { join } from 'path'
+import { join, resolve, sep } from 'path'
 import { execSync } from 'child_process'
 
 const DEFAULT_DAYS = 30
@@ -54,9 +55,35 @@ async function readItems() {
 // Write to a temp file in the same directory, then rename, so a crash never leaves a half file
 async function writeItems(items) {
   await mkdir(join(root, 'redline'), { recursive: true })
+  // The temp name matches the redline/feedback.json* gitignore pattern, so a leftover can't be committed
   const tmp = `${feedbackPath}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(items, null, 2))
-  await rename(tmp, feedbackPath)
+  try {
+    await writeFile(tmp, JSON.stringify(items, null, 2))
+    await rename(tmp, feedbackPath)
+  } catch (err) {
+    await unlink(tmp).catch(() => {})
+    throw err
+  }
+}
+
+// Items saved before expires_at existed fall back to the 30-day default
+function isExpired(r, now) {
+  const created = new Date(r.created_at ?? 0).getTime()
+  const expires = r.expires_at ? new Date(r.expires_at).getTime() : created + DEFAULT_DAYS * DAY_MS
+  return expires <= now
+}
+
+// Delete a local screenshot, but only inside redline/screenshots/. Returns true if removed.
+async function removeScreenshot(path) {
+  if (!path) return false
+  const target = resolve(root, path)
+  if (!target.startsWith(resolve(screenshotsDir) + sep)) return false
+  try {
+    await unlink(target)
+    return true
+  } catch {
+    return false // already gone
+  }
 }
 
 function flag(name) {
@@ -70,26 +97,13 @@ async function purge() {
   if (days !== null && !(days >= 0)) throw new Error('--days must be a number of days, e.g. --days 30')
 
   const now = Date.now()
-  const expired = (r) => {
-    const created = new Date(r.created_at ?? 0).getTime()
-    if (days !== null) return created + days * DAY_MS <= now
-    // Items saved before expires_at existed fall back to the 30-day default
-    const expires = r.expires_at ? new Date(r.expires_at).getTime() : created + DEFAULT_DAYS * DAY_MS
-    return expires <= now
-  }
+  const expired = (r) =>
+    days !== null ? new Date(r.created_at ?? 0).getTime() + days * DAY_MS <= now : isExpired(r, now)
 
   const items = await readItems()
   const gone = items.filter(expired)
   let screenshots = 0
-  for (const r of gone) {
-    if (!r.screenshot_path) continue
-    try {
-      await unlink(join(root, r.screenshot_path))
-      screenshots++
-    } catch {
-      // already gone
-    }
-  }
+  for (const r of gone) if (await removeScreenshot(r.screenshot_path)) screenshots++
   if (gone.length) await writeItems(items.filter((r) => !expired(r)))
   console.log(`Purged ${gone.length} redline${gone.length === 1 ? '' : 's'} and ${screenshots} screenshot${screenshots === 1 ? '' : 's'}.`)
 }
@@ -178,6 +192,8 @@ async function pull() {
   const { status, json } = await sync(remote, { action: 'list' })
   if (status !== 200 || !Array.isArray(json?.items)) throw new Error(`Remote list failed (${status}).`)
 
+  const now = Date.now()
+  const remoteIds = new Set(json.items.map((r) => r.id))
   const byId = new Map(items.map((r) => [r.id, r]))
   let added = 0
   let updated = 0
@@ -186,6 +202,7 @@ async function pull() {
     const synced = { source: 'remote', remote_status: r.status, remote_status_updated_at: r.status_updated_at }
     const local = byId.get(r.id)
     if (!local) {
+      if (isExpired(r, now)) continue // past retention, awaiting the daily purge: never bring it down
       const screenshotPath = await downloadScreenshot({ ...r, screenshot_url })
       const item = { ...r, screenshot_path: screenshotPath, ...synced }
       items.push(item)
@@ -206,8 +223,19 @@ async function pull() {
     Object.assign(local, r, { screenshot_path: screenshotPath }, synced)
     if (changed) updated++
   }
-  await writeItems(items)
+
+  // Retention reaches this machine too. The list above is complete (the function pages
+  // through every row), so a pulled item missing from it was purged or deleted remotely.
+  const removed = items.filter((r) => (r.source === 'remote' && !remoteIds.has(r.id)) || isExpired(r, now))
+  const changedLocally = removed.filter((r) => r.source === 'remote' && r.status !== r.remote_status).map((r) => r.id)
+  for (const r of removed) await removeScreenshot(r.screenshot_path)
+  const gone = new Set(removed)
+  await writeItems(items.filter((r) => !gone.has(r)))
   console.log(`Pulled ${added} new, ${updated} updated${discarded ? `, ${discarded} local change${discarded === 1 ? '' : 's'} discarded` : ''} (${json.items.length} in the inbox).`)
+  if (removed.length) {
+    const note = changedLocally.length ? ` (including ${changedLocally.join(', ')}, changed locally)` : ''
+    console.log(`Removed ${removed.length} expired or purged redline${removed.length === 1 ? '' : 's'}${note}.`)
+  }
 }
 
 async function push() {

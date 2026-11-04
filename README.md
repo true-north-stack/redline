@@ -130,7 +130,7 @@ Before a screenshot or element text is captured, every element matching `[data-p
 
 ### Local (default)
 
-`redline/feedback.json` plus `redline/screenshots/`, written by your API route. Local storage never runs a purge on its own; to enforce retention, run:
+`redline/feedback.json` plus `redline/screenshots/`, written by your API route. Local storage never runs a purge on its own (in remote mode, `pull` does); to enforce retention, run:
 
 ```bash
 node redline/redline.mjs purge            # delete items past their expires_at, plus screenshots
@@ -187,6 +187,8 @@ node redline/redline.mjs push   # send local status changes back to the inbox
 The dev machine never holds the service-role key. The CLI talks only to the `redline-sync` function with the sync secret, and that function can list feedback and change status, nothing else. `REDLINE_REMOTE_URL` and `REDLINE_SYNC_SECRET` come from the environment or `.env.redline`, kept apart from your app's own `SUPABASE_URL` because a dev env usually points at a local stack while tester feedback lives in a deployed project. Every `pull` and `push` prints the host it's talking to.
 
 Sync rules: `pull` takes the remote copy unless you changed the status locally and the remote hasn't moved, in which case your change waits for `push`. If both changed, the inbox wins, and `pull` lists each local change it discarded by id and page. `push` is a conditional update, so if the inbox changed in the meantime it does nothing for that item and tells you to run `pull`. Items created locally are never pushed.
+
+Retention reaches the dev machine too. Every `pull` deletes local items whose `expires_at` has passed and pulled items the inbox no longer has (purged or deleted there), along with their screenshots, and prints one line saying how many it removed. If one of them had a local status change you hadn't pushed, that line names it.
 
 ## Admin inbox
 

@@ -544,3 +544,69 @@ test('sync list signs screenshots in a batch; a missing object is null, not a fa
   const url = items.find((r: RedlineItem) => r.id === kept.id).screenshot_url
   expect((await fetch(url)).status).toBe(200)
 })
+
+const exists = (p: string) => access(p).then(() => true, () => false)
+
+async function deleteRemote(r: RedlineItem) {
+  const res = await fetch(`${URL_}/rest/v1/items?id=eq.${r.id}`, { method: 'DELETE', headers: restHeaders(SECRET) })
+  expect(res.ok).toBe(true)
+  if (r.screenshot_path) {
+    await fetch(`${URL_}/storage/v1/object/redline-screenshots`, {
+      method: 'DELETE',
+      headers: { apikey: SECRET, Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefixes: [r.screenshot_path] }),
+    })
+  }
+}
+
+test('pull removes a pulled item the remote has purged, with its screenshot', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  expect(cli(root, ['pull'], remoteEnv).code).toBe(0)
+  const shot = join(root, 'redline', 'screenshots', `${r0.id}.png`)
+  expect(await exists(shot)).toBe(true)
+  await deleteRemote(r0)
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('Removed 1 expired or purged redline.')
+  expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
+  expect(await exists(shot)).toBe(false)
+})
+
+test('pull removes local items past expires_at and keeps unexpired local-only ones', async () => {
+  const root = await newRoot()
+  await mkdir(join(root, 'redline', 'screenshots'), { recursive: true })
+  const expired = item({ expires_at: new Date(Date.now() - DAY).toISOString(), screenshot_path: 'redline/screenshots/old.png' })
+  const fresh = item()
+  await writeFile(join(root, 'redline', 'screenshots', 'old.png'), 'x')
+  await writeFile(feedbackFile(root), JSON.stringify([expired, fresh]))
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('Removed 1 expired or purged redline.')
+  const ids = (await readLocal(root)).map((x) => x.id)
+  expect(ids).not.toContain(expired.id)
+  expect(ids).toContain(fresh.id)
+  expect(await exists(join(root, 'redline', 'screenshots', 'old.png'))).toBe(false)
+})
+
+test('pull names a removed item that had an unpushed local change', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  await editLocal(root, r0.id, { status: 'fixed' })
+  await deleteRemote(r0)
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.out).toContain(`Removed 1 expired or purged redline (including ${r0.id}, changed locally).`)
+  expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
+})
+
+test('pull never removes anything when the remote list fails', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  const before = await readFile(feedbackFile(root), 'utf-8')
+  const r = cli(root, ['pull'], { ...remoteEnv, REDLINE_REMOTE_URL: 'http://127.0.0.1:9' })
+  expect(r.code).toBe(1)
+  expect(await readFile(feedbackFile(root), 'utf-8')).toBe(before)
+  expect(await exists(join(root, 'redline', 'screenshots', `${r0.id}.png`))).toBe(true)
+})
