@@ -186,7 +186,7 @@ async function editLocal(root: string, id: string, patch: Record<string, unknown
   Object.assign(items.find((r) => r.id === id)!, patch)
   await writeFile(feedbackFile(root), JSON.stringify(items, null, 2))
 }
-const host = new URL(URL_).host
+const host = URL_ ? new URL(URL_).host : ''
 
 test('mode prints remote with the host from .env.redline', async () => {
   const root = await newRoot()
