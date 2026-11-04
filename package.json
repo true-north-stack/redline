@@ -7,7 +7,7 @@
     "test": "playwright test",
     "typecheck": "tsc --noEmit",
     "test:stack": "bash dev/test-stack.sh",
-    "test:all": "bash -c 'set -a; . .redline-stack/test.env; set +a; playwright test'"
+    "test:all": "bash -c 'set -a; . .redline-stack/test.env; set +a; playwright test \"$@\"' --"
   },
   "devDependencies": {
     "@playwright/test": "1.55.0",
