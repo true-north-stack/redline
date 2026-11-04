@@ -140,3 +140,25 @@ test('no defer given: the hook runs without blocking the response', async () => 
   release()
   await expect.poll(() => finished).toBe(true)
 })
+
+test('a defer that throws synchronously still yields 201 and the item is saved', async () => {
+  const errors: unknown[][] = []
+  const orig = console.error
+  console.error = (...a: unknown[]) => { errors.push(a) }
+  try {
+    const store = memoryStore()
+    const h = createFeedbackHandlers({
+      config: { storage: 'supabase' },
+      store,
+      getTesterId: async () => 'user-1',
+      onRedlineCreated: () => {},
+      defer: () => { throw new Error('outside request scope') },
+    })
+    const res = await h.POST(post(payload))
+    expect(res.status).toBe(201)
+    expect(store.items).toHaveLength(1)
+    expect(errors.some((a) => String(a[0]).includes('[redline] defer failed'))).toBe(true)
+  } finally {
+    console.error = orig
+  }
+})

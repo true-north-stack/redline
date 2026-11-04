@@ -95,6 +95,7 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
     const now = new Date()
     const retentionDays = config.retentionDays ?? DEFAULT_RETENTION_DAYS
 
+    let saved: RedlineItem
     try {
       const newRedline: RedlineItem = {
         id,
@@ -113,15 +114,22 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
         expires_at: new Date(now.getTime() + retentionDays * 86_400_000).toISOString(),
       }
       await store.saveItem(newRedline)
-      if (onRedlineCreated) {
-        const summary = toNotificationSummary(newRedline)
-        defer(() => safeNotify(summary))
-      }
-      return Response.json(newRedline, { status: 201 })
+      saved = newRedline
     } catch (err) {
       console.error(err)
       return Response.json({ error: 'Could not save redline' }, { status: 500 })
     }
+
+    // Saved. Nothing below may fail the tester's response, or a retry would duplicate it.
+    if (onRedlineCreated) {
+      const summary = toNotificationSummary(saved)
+      try {
+        defer(() => safeNotify(summary))
+      } catch (err) {
+        console.error('[redline] defer failed', err)
+      }
+    }
+    return Response.json(saved, { status: 201 })
   }
 
   return { GET, POST }
