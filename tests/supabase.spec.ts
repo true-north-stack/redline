@@ -191,3 +191,92 @@ test('inbox_summary returns zero-filled counts, testers and versions; the public
   expect(after.versions).toContain('9.9.9')
   expect((await rpcRaw(PUBLIC)).status).not.toBe(200)
 })
+
+test('query pages newest first with a stable cursor', async () => {
+  const s = store()
+  const tester = `pg-${crypto.randomUUID()}`
+  const created_at = new Date().toISOString()
+  const made = [item({ tester_id: tester, created_at }), item({ tester_id: tester, created_at }), item({ tester_id: tester, created_at })]
+  for (const r of made) await s.saveItem(r)
+
+  const one = await s.query({ testerId: tester, limit: 2 })
+  expect(one.items).toHaveLength(2)
+  expect(one.nextCursor).not.toBeNull()
+  const two = await s.query({ testerId: tester, limit: 2, cursor: one.nextCursor! })
+  expect(two.items).toHaveLength(1)
+  expect(two.nextCursor).toBeNull()
+
+  const all = [...one.items, ...two.items]
+  expect(new Set(all.map((r) => r.id)).size).toBe(3)
+  expect(all.map((r) => r.id)).toEqual(made.map((r) => r.id).sort().reverse())
+})
+
+test('query filters by status, tester and version', async () => {
+  const s = store()
+  const tag = crypto.randomUUID()
+  const a = item({ tester_id: `t-a-${tag}`, app_version: `v-a-${tag}` })
+  const b = item({ tester_id: `t-b-${tag}`, app_version: `v-b-${tag}`, status: 'deferred' })
+  await s.saveItem(a)
+  await s.saveItem(b)
+
+  const byTester = await s.query({ testerId: `t-a-${tag}` })
+  expect(byTester.items.map((r) => r.id)).toEqual([a.id])
+  const byVersion = await s.query({ appVersion: `v-b-${tag}` })
+  expect(byVersion.items.map((r) => r.id)).toEqual([b.id])
+  const byStatus = await s.query({ status: 'deferred', testerId: `t-b-${tag}` })
+  expect(byStatus.items.map((r) => r.id)).toEqual([b.id])
+  const none = await s.query({ status: 'fixed', testerId: `t-a-${tag}` })
+  expect(none.items).toEqual([])
+})
+
+test('get returns the item or null', async () => {
+  const s = store()
+  const r = item()
+  await s.saveItem(r)
+  expect((await s.get(r.id))?.id).toBe(r.id)
+  expect(await s.get(crypto.randomUUID())).toBeNull()
+})
+
+test('setStatus: success, conflict, missing', async () => {
+  const s = store()
+  const r = item()
+  await s.saveItem(r)
+  const before = (await s.get(r.id))!
+
+  const ok = await s.setStatus(r.id, 'fixed', 'admin-1', before.status_updated_at!)
+  expect('item' in ok).toBe(true)
+  if (!('item' in ok)) return
+  expect(ok.item.status).toBe('fixed')
+  expect(ok.item.status_updated_by).toBe('admin-1')
+  expect(ok.item.status_updated_at).not.toBe(before.status_updated_at)
+
+  const stale = await s.setStatus(r.id, 'dismissed', 'admin-2', before.status_updated_at!)
+  expect('conflict' in stale).toBe(true)
+  if ('conflict' in stale) expect(stale.conflict.status).toBe('fixed')
+
+  expect(await s.setStatus(crypto.randomUUID(), 'fixed', 'admin-1', before.status_updated_at!)).toEqual({ missing: true })
+})
+
+test('status_updated_at is returned exactly as stored', async () => {
+  const s = store()
+  const r = item()
+  await s.saveItem(r)
+  const got = await s.get(r.id)
+  expect(got!.status_updated_at).toBe((await readRow(r.id)).status_updated_at)
+})
+
+test('screenshotUrl signs for 300s and is null for a missing object', async () => {
+  const s = store()
+  const r = await saveWithScreenshot(item())
+  const signed = await s.screenshotUrl(r.screenshot_path!)
+  expect(signed).toBeTruthy()
+  const res = await fetch(signed!)
+  expect(res.status).toBe(200)
+  expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG)
+
+  const short = await s.screenshotUrl(r.screenshot_path!, 1)
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  expect((await fetch(short!)).status).not.toBe(200)
+
+  expect(await s.screenshotUrl(`${crypto.randomUUID()}.png`)).toBeNull()
+})

@@ -102,3 +102,13 @@ test('page URLs keep path and query keys, never values or token fragments', () =
   expect(sanitizePageUrl('/auth/callback#access_token=abc&refresh_token=def')).toBe('/auth/callback')
   expect(sanitizePageUrl('https://app.example.com/jobs/123?token=secret')).toBe('/jobs/123?token=…')
 })
+
+test('local store inbox methods reject', async () => {
+  const s = localStore(await mkdtemp(join(tmpdir(), 'redline-')))
+  expect(s.kind).toBe('local')
+  await expect(s.query({})).rejects.toThrow(/not supported/)
+  await expect(s.summary()).rejects.toThrow(/not supported/)
+  await expect(s.get(crypto.randomUUID())).rejects.toThrow(/not supported/)
+  await expect(s.setStatus(crypto.randomUUID(), 'fixed', 'a', 'x')).rejects.toThrow(/not supported/)
+  await expect(s.screenshotUrl('a.png')).rejects.toThrow(/not supported/)
+})
