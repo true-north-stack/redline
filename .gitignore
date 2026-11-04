@@ -1,9 +1,10 @@
 node_modules/
 .redlines-backup.json
-redline/feedback.json
+redline/feedback.json*
 redline/screenshots/
 .DS_Store
 test-results/
 playwright-report/
 .redline-stack/
 .env.redline
+supabase/.temp/

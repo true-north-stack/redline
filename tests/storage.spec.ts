@@ -204,3 +204,14 @@ test('an invalid REDLINE_REMOTE_URL is reported without echoing its value', asyn
     expect(`${failure?.stderr}${failure?.stdout}`).not.toContain('pasted-by-mistake')
   }
 })
+
+test('a leftover feedback.json temp file and the Supabase CLI cache are gitignored, here and in the installer', async () => {
+  const repo = fileURLToPath(new URL('..', import.meta.url))
+  for (const p of ['redline/feedback.json', 'redline/feedback.json.4242.tmp', 'redline/screenshots/a.png', 'supabase/.temp/cli-latest']) {
+    // check-ignore exits 0 when the path is ignored, 1 when it is not
+    expect(() => execFileSync('git', ['check-ignore', '-q', '--no-index', p], { cwd: repo }), p).not.toThrow()
+  }
+  const install = await readFile(join(repo, 'AGENT-INSTALLATION.md'), 'utf-8')
+  expect(install).toContain('redline/feedback.json*')
+  expect(install).toContain('redline/screenshots/')
+})
