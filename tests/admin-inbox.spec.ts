@@ -356,6 +356,7 @@ test('focus: after Mark fixed it is not on body; mobile open and Back move focus
   await page.getByRole('button', { name: 'Back' }).click()
   await expect(list(page)).toBeVisible()
   await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-row-id'))).toBe(
-    '00000000-0000-4000-8000-000000000001',
+    // Feedback 1 was fixed above, so the first row opened is Feedback 2
+    '00000000-0000-4000-8000-000000000002',
   )
 })
