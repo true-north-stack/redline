@@ -46,6 +46,13 @@ FN_ENV="$STACK/fn.env"
 if [ ! -f "$FN_ENV" ]; then
   printf 'REDLINE_PURGE_SECRET=%s\nREDLINE_SYNC_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > "$FN_ENV"
 fi
+STATUS_ENV="$(supabase status -o env)"
+val() { printf '%s\n' "$STATUS_ENV" | grep -E "^$1=" | head -1 | cut -d= -f2- | tr -d '"'; }
+API_URL="$(val API_URL)"
+# The functions container sees SUPABASE_URL as an internal host; signed URLs it
+# returns must point at the host-reachable API URL.
+sed -i.bak '/^REDLINE_PUBLIC_URL=/d' "$FN_ENV" && rm -f "$FN_ENV.bak"
+printf 'REDLINE_PUBLIC_URL=%s\n' "$API_URL" >> "$FN_ENV"
 PURGE_SECRET="$(grep '^REDLINE_PURGE_SECRET=' "$FN_ENV" | cut -d= -f2-)"
 SYNC_SECRET="$(grep '^REDLINE_SYNC_SECRET=' "$FN_ENV" | cut -d= -f2-)"
 
@@ -59,10 +66,6 @@ if [ -f "$PID_FILE" ]; then
   fi
   rm -f "$PID_FILE"
 fi
-STATUS_ENV="$(supabase status -o env)"
-val() { printf '%s\n' "$STATUS_ENV" | grep -E "^$1=" | head -1 | cut -d= -f2- | tr -d '"'; }
-API_URL="$(val API_URL)"
-
 : > "$STACK/functions.log"
 set -m
 nohup supabase functions serve --no-verify-jwt --env-file "$FN_ENV" >> "$STACK/functions.log" 2>&1 &

@@ -280,3 +280,78 @@ test('screenshotUrl signs for 300s and is null for a missing object', async () =
 
   expect(await s.screenshotUrl(`${crypto.randomUUID()}.png`)).toBeNull()
 })
+
+// ---- redline-sync function ----
+
+const syncUrl = `${URL_}/functions/v1/redline-sync`
+const sync = (body: unknown, secret: string | null = SYNC_SECRET) =>
+  fetch(syncUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(secret === null ? {} : { 'x-redline-sync-secret': secret }) },
+    body: JSON.stringify(body),
+  })
+
+test('sync rejects a wrong or missing secret with 401 and non-POST with 405', async () => {
+  expect((await sync({ action: 'list' }, 'wrong')).status).toBe(401)
+  expect((await sync({ action: 'list' }, null)).status).toBe(401)
+  const get = await fetch(syncUrl, { method: 'GET', headers: { 'x-redline-sync-secret': SYNC_SECRET } })
+  expect(get.status).toBe(405)
+})
+
+test('sync rejects unknown actions, bad ids and bad statuses with 400', async () => {
+  const id = crypto.randomUUID()
+  const t = new Date().toISOString()
+  expect((await sync({ action: 'nope' })).status).toBe(400)
+  expect((await sync({})).status).toBe(400)
+  expect((await sync({ action: 'set_status', id: 'not-a-uuid', status: 'fixed', expected_status_updated_at: t })).status).toBe(400)
+  expect((await sync({ action: 'set_status', id: `${id},${id}`, status: 'fixed', expected_status_updated_at: t })).status).toBe(400)
+  expect((await sync({ action: 'set_status', id, status: 'bogus', expected_status_updated_at: t })).status).toBe(400)
+  expect((await sync({ action: 'set_status', id, status: 'fixed' })).status).toBe(400)
+})
+
+test('sync list returns every status with signed screenshot URLs that download', async () => {
+  const a = await saveWithScreenshot(item())
+  const b = item({ status: 'dismissed' })
+  await store().saveItem(b)
+  const res = await sync({ action: 'list' })
+  expect(res.status).toBe(200)
+  const { items } = await res.json()
+  const ra = items.find((r: RedlineItem) => r.id === a.id)
+  const rb = items.find((r: RedlineItem) => r.id === b.id)
+  expect(rb.status).toBe('dismissed')
+  expect(rb.screenshot_url).toBeNull()
+  expect(ra.screenshot_url).toBeTruthy()
+  const dl = await fetch(ra.screenshot_url)
+  expect(dl.status).toBe(200)
+  expect(new Uint8Array(await dl.arrayBuffer())).toEqual(PNG)
+  const times = items.map((r: RedlineItem) => r.created_at)
+  expect(times).toEqual([...times].sort())
+})
+
+test('sync set_status succeeds, conflicts with 409 and misses with 404', async () => {
+  const r = item()
+  await store().saveItem(r)
+  const t0 = (await readRow(r.id)).status_updated_at
+
+  const ok = await sync({ action: 'set_status', id: r.id, status: 'fixed', expected_status_updated_at: t0 })
+  expect(ok.status).toBe(200)
+  const { item: updated } = await ok.json()
+  expect(updated).toMatchObject({ id: r.id, status: 'fixed', status_updated_by: 'redline-cli' })
+  expect(updated.status_updated_at).not.toBe(t0)
+
+  const stale = await sync({ action: 'set_status', id: r.id, status: 'deferred', expected_status_updated_at: t0 })
+  expect(stale.status).toBe(409)
+  expect((await stale.json()).conflict.status).toBe('fixed')
+  expect((await readRow(r.id)).status).toBe('fixed')
+
+  const missing = await sync({ action: 'set_status', id: crypto.randomUUID(), status: 'fixed', expected_status_updated_at: t0 })
+  expect(missing.status).toBe(404)
+  expect(await missing.json()).toEqual({ missing: true })
+})
+
+test('sync cannot delete', async () => {
+  const r = item()
+  await store().saveItem(r)
+  expect((await sync({ action: 'delete', id: r.id })).status).toBe(400)
+  expect(await readRow(r.id)).toBeTruthy()
+})
