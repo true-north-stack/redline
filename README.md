@@ -149,7 +149,7 @@ For testers on a deployed build. Feedback goes into the host's own Supabase proj
 
 Setup:
 
-1. Copy `supabase/migrations/*.sql` into your migrations (rename them with your own timestamps) and apply them.
+1. Copy `supabase/migrations/*.sql` (three files) into your migrations (rename them with your own timestamps) and apply them. The third one, `redline_inbox`, adds `status_updated_at`, `status_updated_by` and the index the admin inbox uses.
 2. Add `feedback` to the exposed schemas: Dashboard → Data API settings, or `schemas = [..., "feedback"]` under `[api]` in `config.toml`.
 3. Deploy the purge function: copy `supabase/functions/redline-purge/`, then `supabase functions deploy redline-purge --no-verify-jwt`.
 4. Pick a long random string and set it in both places:
@@ -160,27 +160,77 @@ Setup:
    select vault.create_secret('https://<project-ref>.supabase.co', 'redline_purge_base_url');
    select vault.create_secret('<secret>', 'redline_purge_secret');
    ```
-5. Set `storage: 'supabase'` in `redline.config.ts`.
+5. Deploy the sync function the CLI uses: copy `supabase/functions/redline-sync/`, then `supabase functions deploy redline-sync --no-verify-jwt`. Give it its own secret, separate from the purge secret:
+   ```bash
+   supabase secrets set REDLINE_SYNC_SECRET=<secret>
+   ```
+   When you serve functions locally, `SUPABASE_URL` inside the function is container-internal, so also set `REDLINE_PUBLIC_URL` to the API URL your machine can reach. Hosted projects don't need it.
+6. On each machine that runs `/redline` against remote feedback, create `.env.redline` in the project root (gitignored) with the project that holds tester feedback:
+   ```
+   REDLINE_REMOTE_URL=https://<project-ref>.supabase.co
+   REDLINE_SYNC_SECRET=<the secret from step 5>
+   ```
+7. Set `storage: 'supabase'` in `redline.config.ts`.
 
 The migration schedules `redline-purge` daily at 03:17 UTC with pg_cron. It deletes expired screenshots through the Storage API, then the rows. Deleting from `storage.objects` in SQL would leave the files behind. Retention is stamped on each item as `expires_at` when it's saved, so changing `retentionDays` affects new feedback only.
 
-To work through remote feedback with Claude, pull it into the local file first:
+### Working through remote feedback with Claude
 
 ```bash
-node --env-file=.env redline/redline.mjs pull   # needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+node redline/redline.mjs mode   # prints `local`, or `remote <host>` when .env.redline exists
+node redline/redline.mjs pull   # bring the inbox into redline/feedback.json
+node redline/redline.mjs push   # send local status changes back to the inbox
 ```
 
-`/redline check`, `/redline fix` and the rest then work as usual. Status changes stay local.
+`/redline check` pulls first, and `/redline fix` and `/redline defer` push afterwards, so `/redline` and the inbox show one status. `/redline clear` empties only the local file, never the remote rows.
+
+The dev machine never holds the service-role key. The CLI talks only to the `redline-sync` function with the sync secret, and that function can list feedback and change status, nothing else. `REDLINE_REMOTE_URL` and `REDLINE_SYNC_SECRET` come from the environment or `.env.redline`, kept apart from your app's own `SUPABASE_URL` because a dev env usually points at a local stack while tester feedback lives in a deployed project. Every `pull` and `push` prints the host it's talking to.
+
+Sync rules: `pull` takes the remote copy unless you changed the status locally and the remote hasn't moved, in which case your change waits for `push`. If both changed, the inbox wins, and `pull` lists each local change it discarded by id and page. `push` is a conditional update, so if the inbox changed in the meantime it does nothing for that item and tells you to run `pull`. Items created locally are never pushed.
+
+## Admin inbox
+
+An inbox for the person running the alpha, inside your own admin area. It reads and triages Supabase-mode feedback from a browser or phone: filter by status, tester and version, open an item to see the feedback, screenshot, page, tester, app version and time, then Mark fixed, Defer, Dismiss or Reopen. A status change is optimistic with a 5 second Undo, and a stale change (someone else got there first) shows "Changed elsewhere" and reloads the item. It is not available in local mode, where the admin API returns 404.
+
+Three pieces, all copied into your project:
+
+- `component/api-admin-route-example.ts` as `app/api/admin/redlines/route.ts` (GET, the list)
+- `component/api-admin-item-route-example.ts` as `app/api/admin/redlines/[id]/route.ts` (GET and PATCH, one item)
+- A page in your admin layout that renders the inbox:
+
+```tsx
+import { RedlineAdminInbox } from '@/components/redline-admin-inbox'
+
+export default function Page() {
+  return <RedlineAdminInbox />   // apiUrl defaults to /api/admin/redlines
+}
+```
+
+State lives in the URL (`?status=open&id=<uuid>`) through the History API, so a notification link opens the item directly and the browser's Back button works. At 1024px and up it is a list with a detail pane; below that, the detail opens full-width with a Back control.
+
+Hooks you implement in the route files:
+
+| Hook | Where | What it must return |
+|---|---|---|
+| `isAdmin(req)` | both admin route files | `{ id: string }` for an admin, `null` for everyone else. Runs on every request, because your layout guard does not cover route handlers. A `null` gets a 404, not a 403, so the endpoint doesn't reveal itself. The stub denies everyone until you wire it. |
+| `describeTesters(ids)` | both admin route files, optional | `Record<string, string>` mapping tester ids to display labels (a name or email). Without it the inbox shows the raw id. |
+| `onRedlineCreated(summary)` | `app/api/redlines/route.ts`, optional | Nothing. It runs after the tester's response is sent, and if it throws, the error is logged and the tester still gets their 201. |
+
+Notification content rule: `onRedlineCreated` receives the page path, tester id, app version, time, whether a screenshot is attached, the UX-review flag and the item id. It never receives feedback text, element text or screenshots, because feedback is free-typed and may contain patient details, and email lacks the database's access controls. Send the owner a link such as `/admin/redline?id=<id>` and let them read the content in the inbox, behind the admin check.
+
+Every admin response is sent with `Cache-Control: no-store`. PATCH needs `Content-Type: application/json`, a valid status (`open`, `fixed`, `dismissed`, `deferred`) and a UUID id. Screenshot URLs are signed for 5 minutes, made when an item is opened, and never stored.
 
 ## Development
 
 ```bash
 pnpm install
-pnpm test        # Playwright: PHI masking (real browser), local storage, CLI, URL sanitizing
+pnpm test:stack  # start an isolated Supabase stack on 553xx ports in .redline-stack/ (needs Docker and the Supabase CLI)
+pnpm test:all    # the full Playwright suite against that stack, nothing skipped; extra args pass through
+pnpm test        # Playwright without the stack: Supabase specs skip
 pnpm typecheck
 ```
 
-The Supabase tests run against a live stack when `REDLINE_SB_URL`, `REDLINE_SB_SECRET`, `REDLINE_SB_PUBLIC` and `REDLINE_SB_PURGE_SECRET` are set; see `tests/supabase.spec.ts`.
+`pnpm test:stack` writes `.redline-stack/test.env`, and `pnpm test:all` loads it, so the Supabase, admin, sync function and CLI tests all run. Plain `pnpm test` skips the specs that need a live stack. The stack uses its own ports and never touches another project's local Supabase.
 
 ## Install
 
