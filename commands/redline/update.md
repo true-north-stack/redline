@@ -60,7 +60,7 @@ The update will replace:
 - `~/.claude/hooks/redline-check-update.js` (update hook)
 - `~/.claude/docs/UX_AUDIT_FRAMEWORK.md` (UX framework)
 
-Your project component files (`redline-inspector.tsx`, `redline-sidebar.tsx`, API route) will NOT be updated automatically. If the update includes component changes, you'll be notified.
+Your project's Redline files (the components, the API routes and `redline/redline.mjs`) will NOT be updated automatically. If the new release changes any of them, you'll be told how to update them.
 ```
 
 Ask the user: "Proceed with update?" with options "Yes, update now" and "No, cancel".
@@ -91,12 +91,20 @@ mkdir -p ~/.claude/docs
 cp /tmp/redline/docs/UX_AUDIT_FRAMEWORK.md ~/.claude/docs/UX_AUDIT_FRAMEWORK.md 2>/dev/null || true
 ```
 
-Check if component files changed:
+Check whether this project's Redline files differ from the new release. Run this from the project root, before the clean-up below deletes /tmp/redline. The installed components live wherever the installer put them, so find them by the inspector's file name:
+
 ```bash
-# Compare component files if the user has them installed
-diff /tmp/redline/component/redline-inspector.tsx /tmp/redline/component/redline-inspector.tsx 2>/dev/null
-diff /tmp/redline/component/redline-sidebar.tsx /tmp/redline/component/redline-sidebar.tsx 2>/dev/null
+COMPONENTS="$(dirname "$(find . -name redline-inspector.tsx -not -path '*/node_modules/*' -print -quit)")"
+CHANGED=""
+for f in redline-sidebar.tsx redline-inspector.tsx redline-mask.ts redline-config.ts redline-storage.ts redline-handlers.ts redline-admin-handlers.ts redline-admin-types.ts redline-admin-inbox.tsx redline-admin-detail.tsx; do
+  # A file missing from the project counts as changed: the new release needs it
+  cmp -s "$COMPONENTS/$f" "/tmp/redline/component/$f" || CHANGED="$CHANGED $f"
+done
+cmp -s redline/redline.mjs /tmp/redline/scripts/redline.mjs || CHANGED="$CHANGED redline/redline.mjs"
+echo "Changed or missing:${CHANGED:- none}"
 ```
+
+If no `redline-inspector.tsx` is found, the project doesn't have the components installed; say so and skip this check.
 
 Clear the update cache:
 ```bash
@@ -118,9 +126,11 @@ rm -rf /tmp/redline
 Restart your session to pick up new commands.
 ```
 
-If component files have changes in the new version, add:
+If the check listed any changed or missing files, add:
 ```
-Component files have been updated upstream. To update your project's components:
-- Re-run the install prompt from AGENT-INSTALLATION.md, or
-- Manually copy from github.com/true-north-stack/redline/component/
+Redline's project files changed upstream: <the list from the check>.
+To update them, re-run the install prompt from AGENT-INSTALLATION.md in this project.
+Don't copy redline-inspector.tsx on its own: the new inspector imports redline-config.ts
+and redline-mask.ts, so copying it alone breaks the build. The install prompt copies the
+full set and keeps local mode working.
 ```
