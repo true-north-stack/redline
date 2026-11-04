@@ -63,7 +63,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
   const fetchItem = useCallback(
     async (forId: string): Promise<AdminDetail | 'gone' | 'error'> => {
       try {
-        const res = await fetch(`${apiUrl}/${forId}`)
+        const res = await fetch(`${apiUrl}/${encodeURIComponent(forId)}`)
         if (res.status === 404) return 'gone'
         if (!res.ok) return 'error'
         return (await res.json()) as AdminDetail
@@ -161,7 +161,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
     setNotice(null)
     setActionError(null)
     try {
-      const res = await fetch(`${apiUrl}/${forId}`, {
+      const res = await fetch(`${apiUrl}/${encodeURIComponent(forId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, expected_status_updated_at: detail.status_updated_at }),

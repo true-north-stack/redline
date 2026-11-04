@@ -267,3 +267,95 @@ test('every button and row is at least 44px tall at 390', async ({ page }) => {
   await expect(detail(page).getByRole('button', { name: 'Mark fixed' })).toBeVisible()
   await check('detail')
 })
+
+// ---- Review fixes ----
+
+test('?id=../../evil never requests outside the admin API and shows the list', async ({ page }) => {
+  const urls: string[] = []
+  page.on('request', (r) => { if (r.url().startsWith('http://redline.test')) urls.push(r.url()) })
+  const { calls } = await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?id=../../evil' })
+  await expect(list(page).getByText('Feedback 1')).toBeVisible()
+  await page.waitForTimeout(200)
+  const api = 'http://redline.test/api/redline-admin'
+  for (const u of urls.filter((u) => !u.endsWith('/admin') && !u.includes('?id='))) {
+    expect(u.startsWith(api), u).toBe(true)
+  }
+  expect(calls.every((c) => /\/api\/redline-admin(\?.*)?$/.test(c.url))).toBe(true)
+  expect(page.url()).not.toContain('evil')
+  // A well-formed id in a path-shaped value is still encoded, never traversed
+  await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?id=00000000-0000-4000-8000-000000000001' })
+  await expect(detail(page).getByText('Feedback 1')).toBeVisible()
+})
+
+test('Undo after switching tabs removes the row from the current tab and fixes counts', async ({ page }) => {
+  await markFixedFirst(page)
+  await expect(page.getByTestId('undo-bar')).toBeVisible()
+  await tab(page, 'Fixed').click()
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await expect(page.getByTestId('undo-bar')).toHaveCount(0)
+  await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
+  await expect(list(page).getByRole('button', { name: /Feedback 4/ })).toBeVisible()
+  await expect(tab(page, 'Open')).toHaveText(/Open\s*3/)
+  await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*1/)
+})
+
+test('Undo never moves the selection or the URL id', async ({ page }) => {
+  await markFixedFirst(page)
+  await list(page).getByRole('button', { name: /Feedback 3/ }).click()
+  await expect(detail(page).getByText('Feedback 3')).toBeVisible()
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await expect(page.getByTestId('undo-bar')).toHaveCount(0)
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toBeVisible()
+  await expect(detail(page).getByText('Feedback 3')).toBeVisible()
+  expect(page.url()).toContain('id=00000000-0000-4000-8000-000000000003')
+})
+
+test('a Load more in flight during a status change cannot reset counts or resurrect rows', async ({ page }) => {
+  const items = Array.from({ length: 60 }, (_, i) => mk(i + 1))
+  await openAdmin(page, { view: 'inbox', items, cursorDelayMs: 800 })
+  await expect(rows(page)).toHaveCount(50)
+  await page.getByRole('button', { name: 'Load more' }).click()
+  await list(page).getByRole('button', { name: /Feedback 1\b/ }).first().click()
+  await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
+  await expect(tab(page, 'Open')).toHaveText(/Open\s*59/)
+  await page.waitForTimeout(1100)
+  await expect(tab(page, 'Open')).toHaveText(/Open\s*59/)
+  await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*1/)
+  await expect(list(page).getByText('Feedback 1', { exact: true })).toHaveCount(0)
+})
+
+test('a resolving Undo never clears a newer Undo bar', async ({ page }) => {
+  await openAdmin(page, { view: 'inbox', items: [mk(1), mk(2), mk(3)], patchDelays: [0, 900, 0] })
+  await list(page).getByRole('button', { name: /Feedback 1/ }).click()
+  await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
+  await expect(detail(page).getByText('Feedback 2')).toBeVisible()
+  await page.getByRole('button', { name: 'Undo' }).click() // A's undo, slow
+  await detail(page).getByRole('button', { name: 'Mark fixed' }).click() // B
+  const bar = page.getByTestId('undo-bar')
+  await expect(bar).toHaveText('Marked fixed · Undo')
+  await page.waitForTimeout(1300) // A's undo resolves meanwhile
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toBeVisible()
+  await expect(bar).toHaveText('Marked fixed · Undo')
+  await expect(bar.getByRole('button', { name: 'Undo' })).toBeEnabled()
+})
+
+test('focus: after Mark fixed it is not on body; mobile open and Back move focus', async ({ page }) => {
+  await markFixedFirst(page)
+  await expect(detail(page).getByText('Feedback 2')).toBeVisible()
+  const inDetail = () => page.evaluate(() => document.activeElement !== document.body &&
+    !!document.querySelector('[data-testid=detail-pane]')?.contains(document.activeElement))
+  await expect.poll(inDetail).toBe(true)
+
+  await page.setViewportSize({ width: 390, height: 800 })
+  await page.goto('http://redline.test/admin')
+  await expect(rows(page).first()).toBeVisible()
+  await rows(page).first().click()
+  await expect(list(page)).toBeHidden()
+  await expect.poll(inDetail).toBe(true)
+  await page.getByRole('button', { name: 'Back' }).click()
+  await expect(list(page)).toBeVisible()
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-row-id'))).toBe(
+    '00000000-0000-4000-8000-000000000001',
+  )
+})

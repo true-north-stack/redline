@@ -49,6 +49,10 @@ export interface OpenAdminOpts {
   search?: string
   /** Extra delay on PATCH responses only. */
   patchDelayMs?: number
+  /** Per-PATCH delays in call order (0 or missing = none), applied on top of patchDelayMs. */
+  patchDelays?: number[]
+  /** Extra delay on list requests that carry a cursor (Load more); the page is snapshotted before the wait. */
+  cursorDelayMs?: number
   /** Screenshot requests fail (simulates an expired signed URL). */
   failImages?: boolean
   /** Next PATCH 409s after applying these fields as the "elsewhere" change. */
@@ -66,6 +70,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
   let purgeOnPatch = opts.purgeOnPatch
   let failList = opts.failList
   let signed = 0
+  let patchN = 0
   const json = (status: number, body: unknown) => ({
     status, contentType: 'application/json', body: JSON.stringify(body),
   })
@@ -113,11 +118,13 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
         const limit = Number(q.get('limit') || 50)
         const items = matching.slice(start, start + limit)
         const nextCursor = start + limit < matching.length ? String(start + limit) : null
-        return route.fulfill(json(200, {
+        const payload = {
           items, nextCursor, counts,
           testers: [...testers].map(([id, label]) => ({ id, label })),
           versions,
-        }))
+        }
+        if (q.get('cursor')) await wait(opts.cursorDelayMs)
+        return route.fulfill(json(200, payload))
       }
       const item = store.get(id)
       if (!item) return route.fulfill(json(404, { error: 'not found' }))
@@ -130,6 +137,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
       }
       if (req.method() === 'PATCH') {
         await wait(opts.patchDelayMs)
+        await wait(opts.patchDelays?.[patchN++])
         if (purgeOnPatch) { purgeOnPatch = false; store.delete(id); return route.fulfill(json(404, { error: 'not found' })) }
         if (conflictWith) {
           Object.assign(item, conflictWith, { status_updated_at: `elsewhere-${Date.now()}` })

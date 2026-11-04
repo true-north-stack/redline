@@ -22,6 +22,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'all', label: 'All' },
 ]
 const UNDO_MS = 5000
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ZERO: Record<RedlineStatus, number> = { open: 0, fixed: 0, dismissed: 0, deferred: 0 }
 const control =
   'min-h-[44px] rounded-md border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50'
@@ -30,7 +31,7 @@ function readQuery(): Query {
   const p = new URLSearchParams(window.location.search)
   const s = p.get('status')
   const status: Tab = s === 'all' || TABS.some((t) => t.key === s) ? (s as Tab) : 'open'
-  return { status, tester: p.get('tester') ?? '', version: p.get('version') ?? '', id: p.get('id') || null }
+  return { status, tester: p.get('tester') ?? '', version: p.get('version') ?? '', id: UUID.test(p.get('id') ?? '') ? p.get('id') : null }
 }
 
 function writeQuery(q: Query, mode: 'push' | 'replace') {
@@ -88,6 +89,7 @@ function Row({ item, selected, onOpen }: { item: AdminItem; selected: boolean; o
     <li>
       <button
         type="button"
+        data-row-id={item.id}
         onClick={onOpen}
         aria-current={selected ? 'true' : undefined}
         className={`flex min-h-[44px] w-full min-w-0 flex-col gap-1 border-b border-border px-4 py-3 text-left transition-colors hover:bg-muted ${selected ? 'bg-muted' : 'bg-background'}`}
@@ -121,7 +123,6 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   const [moreBusy, setMoreBusy] = useState(false)
   const [moreError, setMoreError] = useState(false)
   const [undo, setUndo] = useState<Undo | null>(null)
-  const [undoBusy, setUndoBusy] = useState(false)
   const desktop = useDesktop()
 
   const qRef = useRef(q)
@@ -130,6 +131,16 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   itemsRef.current = items
   const reqId = useRef(0)
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const undoRef = useRef<Undo | null>(null)
+  undoRef.current = undo
+  const loadingFirst = useRef(false)
+  const focusNext = useRef<'detail' | 'list' | null>(null)
+  const openedFrom = useRef<string | null>(null)
+  const detailRef = useRef<HTMLElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const listRef = useRef<HTMLElement>(null)
+  const [detailKey, setDetailKey] = useState(0)
+  const [undoBusyId, setUndoBusyId] = useState<string | null>(null)
 
   const buildUrl = useCallback(
     (cursor?: string) => {
@@ -146,9 +157,15 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
 
   // Read the URL after mount (server render has no window) and follow history
   useEffect(() => {
-    setQ(readQuery())
+    const initial = readQuery()
+    setQ(initial)
+    writeQuery(initial, 'replace') // drops anything we did not accept (bad id, unknown status)
     setReady(true)
-    const onPop = () => setQ(readQuery())
+    const onPop = () => {
+      const next = readQuery()
+      if (qRef.current.id && !next.id) focusNext.current = 'list'
+      setQ(next)
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
@@ -163,6 +180,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
 
   const loadFirst = useCallback(async () => {
     const mine = ++reqId.current
+    loadingFirst.current = true
     setState('loading')
     setMoreError(false)
     try {
@@ -170,16 +188,27 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
       if (!res.ok) throw new Error(String(res.status))
       const data = (await res.json()) as AdminListResponse
       if (mine !== reqId.current) return
+      loadingFirst.current = false
       applyPage(data, false)
       setState('ready')
     } catch {
-      if (mine === reqId.current) setState('error')
+      if (mine === reqId.current) {
+        loadingFirst.current = false
+        setState('error')
+      }
     }
   }, [buildUrl])
 
   useEffect(() => {
     if (ready) loadFirst()
   }, [ready, loadFirst])
+
+  // A local change makes any list response that started earlier stale. A first-page load
+  // is re-run (the server already has the change); a Load more is dropped and can be retried.
+  function invalidateLists() {
+    reqId.current++
+    if (loadingFirst.current) loadFirst()
+  }
 
   async function loadMore() {
     if (!nextCursor || moreBusy) return
@@ -205,6 +234,8 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   }
 
   function openItem(id: string) {
+    openedFrom.current = id
+    focusNext.current = 'detail'
     const next = { ...qRef.current, id }
     setQ(next)
     writeQuery(next, 'push')
@@ -217,6 +248,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   }
 
   function back() {
+    focusNext.current = 'list'
     if (window.history.state?.redlineInbox) window.history.back()
     else selectQuiet(null)
   }
@@ -228,7 +260,11 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
     if (at < 0) return
     const rest = list.filter((i) => i.id !== id)
     setItems(rest)
-    if (advance && qRef.current.id === id) selectQuiet((rest[at] ?? rest[at - 1])?.id ?? null)
+    if (advance && qRef.current.id === id) {
+      const next = (rest[at] ?? rest[at - 1])?.id ?? null
+      focusNext.current = next ? 'detail' : 'list'
+      selectQuiet(next)
+    }
   }
 
   function bumpCounts(from: RedlineStatus, to: RedlineStatus) {
@@ -244,6 +280,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current) }, [])
 
   function onStatusChanged(item: AdminItem, previous: AdminItem) {
+    invalidateLists()
     bumpCounts(previous.status, item.status)
     const tab = qRef.current.status
     if (tab !== 'all' && item.status !== tab) removeRow(item.id, true)
@@ -252,6 +289,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   }
 
   function onGone(id: string) {
+    invalidateLists()
     const row = itemsRef.current.find((i) => i.id === id)
     if (row) {
       setCounts((c) => ({ ...c, [row.status]: Math.max(0, c[row.status] - 1) }))
@@ -260,17 +298,21 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   }
 
   async function doUndo() {
-    if (!undo || undoBusy) return
+    if (!undo || undoBusyId === undo.item.id) return
     const { item, previous } = undo
     if (undoTimer.current) clearTimeout(undoTimer.current)
-    setUndoBusy(true)
+    setUndoBusyId(item.id)
+    // Undo is single-slot: a newer action replaces the bar, and this one must not touch it
+    const stillMine = () => undoRef.current?.item.id === item.id
     const fail = (error: string) => {
-      setUndo({ item, previous, error })
-      undoTimer.current = setTimeout(() => setUndo(null), UNDO_MS)
+      if (stillMine()) {
+        setUndo({ item, previous, error })
+        undoTimer.current = setTimeout(() => setUndo((u) => (u?.item.id === item.id ? null : u)), UNDO_MS)
+      }
       loadFirst()
     }
     try {
-      const res = await fetch(`${apiUrl}/${item.id}`, {
+      const res = await fetch(`${apiUrl}/${encodeURIComponent(item.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         // The token from the first PATCH's response, not the one the item was loaded with
@@ -278,6 +320,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
       })
       if (res.ok) {
         const restored = (await res.json()) as AdminItem
+        invalidateLists()
         bumpCounts(item.status, restored.status)
         const tab = qRef.current.status
         if (tab === 'all' || tab === restored.status) {
@@ -286,18 +329,42 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
               ? list.map((i) => (i.id === restored.id ? { ...i, ...restored } : i))
               : [...list, restored].sort(newerFirst),
           )
+        } else {
+          removeRow(restored.id, false)
         }
-        setUndo(null)
-        selectQuiet(restored.id)
+        // Never move the selection or the mobile view; only refresh the pane if it shows this item
+        if (qRef.current.id === restored.id) setDetailKey((k) => k + 1)
+        setUndo((u) => (u?.item.id === item.id ? null : u))
       } else if (res.status === 404) fail('That feedback is gone.')
       else if (res.status === 409) fail('Changed elsewhere. Could not undo.')
       else fail('Could not undo. Try again.')
     } catch {
       fail('Could not undo. Try again.')
     } finally {
-      setUndoBusy(false)
+      setUndoBusyId((id) => (id === item.id ? null : id))
     }
   }
+
+  // Move focus after a selection change so it never drops to <body>
+  useEffect(() => {
+    const want = focusNext.current
+    if (!want) return
+    if (want === 'detail') {
+      if (!q.id) return
+      if (!desktop && !showDetail) return
+      focusNext.current = null
+      // On desktop, opening a row by click keeps focus where the user is
+      if (desktop && document.activeElement && document.activeElement !== document.body && !detailRef.current?.contains(document.activeElement) && openedFrom.current === q.id) return
+      detailRef.current?.focus()
+    } else {
+      if (q.id && !desktop) return
+      focusNext.current = null
+      const row = openedFrom.current
+        ? listRef.current?.querySelector<HTMLElement>(`[data-row-id="${openedFrom.current}"]`)
+        : null
+      ;(row ?? headingRef.current)?.focus()
+    }
+  })
 
   const testerOptions = q.tester && !testers.some((t) => t.id === q.tester) ? [...testers, { id: q.tester, label: q.tester }] : testers
   const versionOptions = q.version && !versions.includes(q.version) ? [...versions, q.version] : versions
@@ -307,10 +374,12 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   return (
     <div className="relative flex min-w-0 flex-col lg:h-[calc(100dvh-4rem)] lg:flex-row">
       <section
+        ref={listRef}
         data-testid="list-pane"
         hidden={!showList}
         className="flex min-w-0 flex-col bg-background lg:w-[26rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-border"
       >
+        <h2 ref={headingRef} tabIndex={-1} className="sr-only">Tester feedback</h2>
         <div className="flex flex-col gap-3 border-b border-border p-3">
           <div role="tablist" aria-label="Status" className="flex flex-wrap gap-1">
             {TABS.map((t) => {
@@ -391,9 +460,17 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
         )}
       </section>
 
-      <section data-testid="detail-pane" hidden={!showDetail} className="min-w-0 flex-1 lg:overflow-hidden">
+      <section
+        ref={detailRef}
+        tabIndex={-1}
+        aria-label="Feedback detail"
+        data-testid="detail-pane"
+        hidden={!showDetail}
+        className="min-w-0 flex-1 outline-none lg:overflow-hidden"
+      >
         {q.id ? (
           <RedlineAdminDetail
+            key={detailKey}
             apiUrl={apiUrl}
             id={q.id}
             onBack={back}
@@ -419,7 +496,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
               <button
                 type="button"
                 onClick={doUndo}
-                disabled={undoBusy}
+                disabled={undoBusyId === undo.item.id}
                 className="inline-flex min-h-[44px] items-center px-2 font-medium text-primary underline disabled:opacity-50"
               >
                 Undo
