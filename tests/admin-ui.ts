@@ -41,8 +41,12 @@ export interface OpenAdminOpts {
   view: 'detail' | 'inbox'
   id?: string
   items: AdminItem[]
+  /** The next list request fails with a 500 (later ones succeed), so Retry can recover. */
   failList?: boolean
+  /** Delay on every API response. */
   delayMs?: number
+  /** Query string for the page URL, e.g. '?status=fixed'. For the inbox view, `id` is added as ?id=. */
+  search?: string
   /** Extra delay on PATCH responses only. */
   patchDelayMs?: number
   /** Screenshot requests fail (simulates an expired signed URL). */
@@ -60,6 +64,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
   const store = new Map(opts.items.map((i) => [i.id, { ...i }]))
   let conflictWith = opts.conflictWith
   let purgeOnPatch = opts.purgeOnPatch
+  let failList = opts.failList
   let signed = 0
   const json = (status: number, body: unknown) => ({
     status, contentType: 'application/json', body: JSON.stringify(body),
@@ -89,11 +94,30 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
       calls.push({ method: req.method(), url: req.url(), body })
       await wait(opts.delayMs)
       if (!id) {
-        if (opts.failList) return route.fulfill(json(500, { error: 'boom' }))
-        const items = [...store.values()]
+        if (failList) { failList = false; return route.fulfill(json(500, { error: 'boom' })) }
+        // Newest first, ties by id, like the real store
+        const all = [...store.values()].sort((a, b) =>
+          a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : a.created_at < b.created_at ? 1 : -1)
+        // Counts, testers and versions ignore the filters, like the real API
         const counts = { open: 0, fixed: 0, dismissed: 0, deferred: 0 }
-        for (const i of items) counts[i.status]++
-        return route.fulfill(json(200, { items, nextCursor: null, counts, testers: [], versions: [] }))
+        for (const i of all) counts[i.status]++
+        const testers = new Map<string, string>()
+        for (const i of all) if (i.tester_id) testers.set(i.tester_id, i.tester_label ?? i.tester_id)
+        const versions = [...new Set(all.map((i) => i.app_version).filter((v): v is string => !!v))].sort()
+        const q = url.searchParams
+        const matching = all.filter((i) =>
+          (!q.get('status') || i.status === q.get('status')) &&
+          (!q.get('tester') || i.tester_id === q.get('tester')) &&
+          (!q.get('version') || i.app_version === q.get('version')))
+        const start = Number(q.get('cursor') || 0)
+        const limit = Number(q.get('limit') || 50)
+        const items = matching.slice(start, start + limit)
+        const nextCursor = start + limit < matching.length ? String(start + limit) : null
+        return route.fulfill(json(200, {
+          items, nextCursor, counts,
+          testers: [...testers].map(([id, label]) => ({ id, label })),
+          versions,
+        }))
       }
       const item = store.get(id)
       if (!item) return route.fulfill(json(404, { error: 'not found' }))
@@ -120,7 +144,8 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
     }
     return route.fulfill({ status: 404, body: '' })
   })
-  await page.goto(`${ORIGIN}/admin`)
+  const search = opts.search ?? (opts.view === 'inbox' && opts.id ? `?id=${opts.id}` : '')
+  await page.goto(`${ORIGIN}/admin${search}`)
   return { calls, store }
 }
 
