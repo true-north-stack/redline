@@ -72,6 +72,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
   const [feedback, setFeedback] = useState('')
   const [includeScreenshot, setIncludeScreenshot] = useState(false)
+  // Masking or capture failed for the current selection: no screenshot can be attached
+  const [screenshotDropped, setScreenshotDropped] = useState(false)
   const [requestUxReview, setRequestUxReview] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -192,6 +194,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Capture area screenshot
   const captureArea = useCallback(async (area: AreaRect) => {
     const { x, y, w, h } = normalizeArea(area)
+    setScreenshotDropped(false)
     try {
       const dpr = window.devicePixelRatio || 1
       const scrollX = window.scrollX
@@ -224,6 +227,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       console.warn('[redline] area screenshot dropped:', err)
       screenshotCanvasRef.current = null
       setIncludeScreenshot(false)
+      setScreenshotDropped(true)
       // Still show feedback modal even if capture fails
       setAreaComplete(true)
       setTimeout(() => inputRef.current?.focus(), 50)
@@ -306,6 +310,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
     async function captureElement() {
       if (!selectedEl) return
+      setScreenshotDropped(false)
       try {
         const canvas = await captureMasked(selectedEl, masksKey.split('\n'), {
           backgroundColor: '#1a1a1a',
@@ -317,6 +322,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         // Masking or capture failed: drop the screenshot rather than send it unmasked
         console.warn('[redline] screenshot dropped:', err)
         screenshotCanvasRef.current = null
+        // Uncheck, even if the tester ticked it while the capture ran, so the form never
+        // claims a screenshot that will not be sent
+        setIncludeScreenshot(false)
+        setScreenshotDropped(true)
       }
     }
 
@@ -825,12 +834,18 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 <input
                   type="checkbox"
                   data-redline-ui
-                  checked={includeScreenshot}
+                  checked={includeScreenshot && !screenshotDropped}
+                  disabled={screenshotDropped}
                   onChange={(e) => setIncludeScreenshot(e.target.checked)}
                   style={{ accentColor: '#ef4444' }}
                 />
                 Include Screenshot
               </label>
+              {screenshotDropped && (
+                <div data-redline-ui style={{ fontSize: 10, color: '#f87171', marginTop: -2 }}>
+                  Screenshot dropped: masking failed.
+                </div>
+              )}
               <label
                 data-redline-ui
                 style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}

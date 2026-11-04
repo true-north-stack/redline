@@ -208,7 +208,13 @@ async function captureCard(page: Page, posts: Request[], expectLog: string) {
   const card = (await page.locator('#card').boundingBox())!
   await page.mouse.click(card.x + 6, card.y + 6)
   await logged
-  await page.getByLabel('Include Screenshot').check()
+  const box = page.getByLabel('Include Screenshot')
+  if (expectLog === 'screenshot dropped') {
+    await expect(box).not.toBeChecked()
+    await expect(box).toBeDisabled()
+  } else {
+    await box.check()
+  }
   await submit(page)
   await expect.poll(() => posts.length).toBe(1)
   return posts[0]
@@ -251,7 +257,11 @@ test('fails closed: a bad selector drops the screenshot and the element text', a
   await page.mouse.click(card.x + 6, card.y + 6)
   await dropped
 
-  await page.getByLabel('Include Screenshot').check()
+  // The tester must not be told a screenshot is attached when it was dropped
+  const box = page.getByLabel('Include Screenshot')
+  await expect(box).not.toBeChecked()
+  await expect(box).toBeDisabled()
+  await expect(page.getByText('Screenshot dropped: masking failed.')).toBeVisible()
   await submit(page)
   await expect.poll(() => posts.length).toBe(1)
 
