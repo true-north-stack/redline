@@ -5,6 +5,9 @@
 //   REDLINE_SB_SECRET        secret key (sb_secret_…) or legacy service_role key
 //   REDLINE_SB_PUBLIC        publishable or anon key (must be locked out)
 //   REDLINE_SB_PURGE_SECRET  REDLINE_PURGE_SECRET the function was started with
+//   REDLINE_SB_SYNC_SECRET   REDLINE_SYNC_SECRET the function was started with
+//
+// `pnpm test:stack` starts a local stack and writes these to .redline-stack/test.env.
 
 import { test, expect } from '@playwright/test'
 import { mkdtemp, readFile, access } from 'fs/promises'
@@ -18,11 +21,12 @@ const URL_ = process.env.REDLINE_SB_URL ?? ''
 const SECRET = process.env.REDLINE_SB_SECRET ?? ''
 const PUBLIC = process.env.REDLINE_SB_PUBLIC ?? ''
 const PURGE_SECRET = process.env.REDLINE_SB_PURGE_SECRET ?? ''
+const SYNC_SECRET = process.env.REDLINE_SB_SYNC_SECRET ?? ''
 const CLI = fileURLToPath(new URL('../scripts/redline.mjs', import.meta.url))
 const DAY = 86_400_000
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
 
-test.skip(!URL_ || !SECRET || !PUBLIC || !PURGE_SECRET, 'REDLINE_SB_* env not set')
+test.skip(!URL_ || !SECRET || !PUBLIC || !PURGE_SECRET || !SYNC_SECRET, 'REDLINE_SB_* env not set')
 test.describe.configure({ mode: 'serial' })
 
 const store = () => supabaseStore({ storage: 'supabase', supabase: { url: URL_, secretKey: SECRET } })
@@ -58,6 +62,45 @@ const objectStatus = (path: string, key: string) =>
   fetch(`${URL_}/storage/v1/object/authenticated/redline-screenshots/${path}`, {
     headers: { apikey: key, Authorization: `Bearer ${key}` },
   }).then((r) => r.status)
+
+const restHeaders = (key: string) => ({
+  apikey: key,
+  Authorization: `Bearer ${key}`,
+  'Accept-Profile': 'feedback',
+  'Content-Profile': 'feedback',
+})
+
+async function readRow(id: string) {
+  const res = await fetch(`${URL_}/rest/v1/items?id=eq.${id}&select=*`, { headers: restHeaders(SECRET) })
+  expect(res.ok).toBe(true)
+  return (await res.json())[0]
+}
+
+async function patchRow(id: string, patch: Record<string, unknown>) {
+  const res = await fetch(`${URL_}/rest/v1/items?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { ...restHeaders(SECRET), 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  expect(res.ok).toBe(true)
+}
+
+const rpcRaw = (key: string) =>
+  fetch(`${URL_}/rest/v1/rpc/inbox_summary`, {
+    method: 'POST',
+    headers: { ...restHeaders(key), 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+
+async function rpcSummary(key: string) {
+  const res = await rpcRaw(key)
+  expect(res.status).toBe(200)
+  return (await res.json()) as {
+    counts: { open: number; fixed: number; dismissed: number; deferred: number }
+    testers: string[]
+    versions: string[]
+  }
+}
 
 let fresh: RedlineItem
 
@@ -127,4 +170,24 @@ test('CLI pull copies remote redlines and screenshots into feedback.json, once',
   await access(join(root, pulled.screenshot_path!))
 
   expect(pull()).toMatch(/^Pulled 0 new redlines \(\d+ already local\)\.$/)
+})
+
+test('status change stamps status_updated_at; other updates leave it', async () => {
+  const r = await saveWithScreenshot(item())
+  const t0 = (await readRow(r.id)).status_updated_at
+  await patchRow(r.id, { feedback: 'edited' })
+  expect((await readRow(r.id)).status_updated_at).toBe(t0)
+  await patchRow(r.id, { status: 'fixed' })
+  expect((await readRow(r.id)).status_updated_at).not.toBe(t0)
+})
+
+test('inbox_summary returns zero-filled counts, testers and versions; the public key cannot call it', async () => {
+  const before = await rpcSummary(SECRET)
+  await saveWithScreenshot(item({ tester_id: 'tester-sum', app_version: '9.9.9' }))
+  const after = await rpcSummary(SECRET)
+  expect(Object.keys(after.counts).sort()).toEqual(['deferred', 'dismissed', 'fixed', 'open'])
+  expect(after.counts.open).toBe(before.counts.open + 1)
+  expect(after.testers).toContain('tester-sum')
+  expect(after.versions).toContain('9.9.9')
+  expect((await rpcRaw(PUBLIC)).status).not.toBe(200)
 })
