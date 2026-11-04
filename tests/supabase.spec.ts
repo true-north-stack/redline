@@ -10,7 +10,7 @@
 // `pnpm test:stack` starts a local stack and writes these to .redline-stack/test.env.
 
 import { test, expect } from '@playwright/test'
-import { mkdtemp, readFile, access } from 'fs/promises'
+import { mkdtemp, readFile, writeFile, mkdir, access } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
@@ -158,18 +158,158 @@ test('adapter purge does the same', async () => {
   expect(await objectStatus(expired.screenshot_path!, SECRET)).not.toBe(200)
 })
 
-test('CLI pull copies remote redlines and screenshots into feedback.json, once', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'redline-'))
-  const env = { ...process.env, REDLINE_ROOT: root, SUPABASE_URL: URL_, SUPABASE_SERVICE_ROLE_KEY: SECRET }
-  const pull = () => execFileSync('node', [CLI, 'pull'], { env, encoding: 'utf-8' }).trim()
+// ---- CLI mode / pull / push through redline-sync ----
 
-  expect(pull()).toMatch(/^Pulled [1-9]\d* new redlines? \(0 already local\)\.$/)
-  const local: RedlineItem[] = JSON.parse(await readFile(join(root, 'redline', 'feedback.json'), 'utf-8'))
-  const pulled = local.find((r) => r.id === fresh.id)!
-  expect(pulled.screenshot_path).toBe(`redline/screenshots/${fresh.id}.png`)
+type CliResult = { out: string; err: string; code: number }
+
+function cli(root: string, args: string[], extra: Record<string, string | undefined> = {}): CliResult {
+  const env: Record<string, string | undefined> = { ...process.env, REDLINE_ROOT: root, ...extra }
+  delete env.REDLINE_REMOTE_URL
+  delete env.REDLINE_SYNC_SECRET
+  Object.assign(env, extra)
+  try {
+    const out = execFileSync('node', [CLI, ...args], { env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return { out: out.trim(), err: '', code: 0 }
+  } catch (e) {
+    const x = e as { stdout?: string; stderr?: string; status?: number }
+    return { out: (x.stdout ?? '').trim(), err: (x.stderr ?? '').trim(), code: x.status ?? 1 }
+  }
+}
+
+const remoteEnv = { REDLINE_REMOTE_URL: URL_, REDLINE_SYNC_SECRET: SYNC_SECRET }
+const newRoot = () => mkdtemp(join(tmpdir(), 'redline-'))
+const feedbackFile = (root: string) => join(root, 'redline', 'feedback.json')
+const readLocal = async (root: string): Promise<(RedlineItem & Record<string, unknown>)[]> =>
+  JSON.parse(await readFile(feedbackFile(root), 'utf-8'))
+async function editLocal(root: string, id: string, patch: Record<string, unknown>) {
+  const items = await readLocal(root)
+  Object.assign(items.find((r) => r.id === id)!, patch)
+  await writeFile(feedbackFile(root), JSON.stringify(items, null, 2))
+}
+const host = new URL(URL_).host
+
+test('mode prints remote with the host from .env.redline', async () => {
+  const root = await newRoot()
+  await writeFile(join(root, '.env.redline'), `# project\nREDLINE_REMOTE_URL=${URL_}\nREDLINE_SYNC_SECRET="${SYNC_SECRET}"\n`)
+  const r = cli(root, ['mode'])
+  expect(r.code).toBe(0)
+  expect(r.out).toBe(`remote ${host}`)
+})
+
+test('pull without remote config fails and names .env.redline, even with SUPABASE_URL set', async () => {
+  const root = await newRoot()
+  const r = cli(root, ['pull'], { SUPABASE_URL: URL_, SUPABASE_SERVICE_ROLE_KEY: SECRET })
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('.env.redline')
+  expect(r.out).toBe('')
+})
+
+test('pull stores source, remote_status and the exact remote_status_updated_at string', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.code).toBe(0)
+  const pulled = (await readLocal(root)).find((x) => x.id === r0.id)!
+  const remote = (await store().get(r0.id))!
+  expect(pulled.source).toBe('remote')
+  expect(pulled.status).toBe('open')
+  expect(pulled.remote_status).toBe('open')
+  expect(pulled.remote_status_updated_at === remote.status_updated_at).toBe(true)
+  expect(pulled.screenshot_path).toBe(`redline/screenshots/${r0.id}.png`)
   await access(join(root, pulled.screenshot_path!))
+  expect(cli(root, ['pull'], remoteEnv).out).toMatch(/Pulled 0 new/)
+})
 
-  expect(pull()).toMatch(/^Pulled 0 new redlines \(\d+ already local\)\.$/)
+test('pull and push print the project host first', async () => {
+  const root = await newRoot()
+  expect(cli(root, ['pull'], remoteEnv).out.split('\n')[0]).toBe(`Supabase: ${host}`)
+  expect(cli(root, ['push'], remoteEnv).out.split('\n')[0]).toBe(`Supabase: ${host}`)
+})
+
+test('push after pull succeeds and records redline-cli', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  await editLocal(root, r0.id, { status: 'fixed' })
+  const r = cli(root, ['push'], remoteEnv)
+  expect(r.code).toBe(0)
+  const remote = (await store().get(r0.id))!
+  expect(remote.status).toBe('fixed')
+  expect(remote.status_updated_by).toBe('redline-cli')
+  const local = (await readLocal(root)).find((x) => x.id === r0.id)!
+  expect(local.remote_status).toBe('fixed')
+  expect(local.remote_status_updated_at === remote.status_updated_at).toBe(true)
+  // a second push has nothing left to send
+  expect(cli(root, ['push'], remoteEnv).out).not.toContain(r0.id)
+})
+
+test('push conflict changes nothing remotely and says to pull', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  const seen = (await store().get(r0.id))!
+  expect(await store().setStatus(r0.id, 'dismissed', 'admin-1', seen.status_updated_at!)).toHaveProperty('item')
+  await editLocal(root, r0.id, { status: 'fixed' })
+  const r = cli(root, ['push'], remoteEnv)
+  expect(r.out).toContain(`Conflict on ${r0.id}: changed in the inbox. Run pull.`)
+  const remote = (await store().get(r0.id))!
+  expect(remote.status).toBe('dismissed')
+  expect(remote.status_updated_by).toBe('admin-1')
+})
+
+test('pull after a conflict takes the remote status and reports the discarded change', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  const seen = (await store().get(r0.id))!
+  await store().setStatus(r0.id, 'dismissed', 'admin-1', seen.status_updated_at!)
+  await editLocal(root, r0.id, { status: 'fixed' })
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.out).toContain(`Discarded local change on ${r0.id} (${r0.page_url}): fixed → kept dismissed`)
+  const local = (await readLocal(root)).find((x) => x.id === r0.id)!
+  const remote = (await store().get(r0.id))!
+  expect(local.status).toBe('dismissed')
+  expect(local.remote_status).toBe('dismissed')
+  expect(local.remote_status_updated_at === remote.status_updated_at).toBe(true)
+  // settled: nothing more to push
+  expect(cli(root, ['push'], remoteEnv).out).not.toContain(r0.id)
+})
+
+test('pull takes an inbox change when the local copy was untouched', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  const seen = (await store().get(r0.id))!
+  await store().setStatus(r0.id, 'deferred', 'admin-1', seen.status_updated_at!)
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.out).not.toContain('Discarded')
+  expect((await readLocal(root)).find((x) => x.id === r0.id)!.status).toBe('deferred')
+})
+
+test('pull keeps an unpushed local change when the remote has not moved', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  cli(root, ['pull'], remoteEnv)
+  await editLocal(root, r0.id, { status: 'fixed' })
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.out).not.toContain('Discarded')
+  const local = (await readLocal(root)).find((x) => x.id === r0.id)!
+  expect(local.status).toBe('fixed')
+  expect(local.remote_status).toBe('open')
+  expect(cli(root, ['push'], remoteEnv).code).toBe(0)
+  expect((await store().get(r0.id))!.status).toBe('fixed')
+})
+
+test('local-only items are never pushed', async () => {
+  const root = await newRoot()
+  const local = item({ status: 'fixed' })
+  await mkdir(join(root, 'redline'), { recursive: true })
+  await writeFile(feedbackFile(root), JSON.stringify([local]))
+  const r = cli(root, ['push'], remoteEnv)
+  expect(r.code).toBe(0)
+  expect(await store().get(local.id)).toBeNull()
+  expect(r.out).not.toContain(local.id)
+  expect((await readLocal(root))[0]).toEqual(local)
 })
 
 test('status change stamps status_updated_at; other updates leave it', async () => {

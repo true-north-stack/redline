@@ -27,7 +27,7 @@ Each redline object has: `id`, `page_url`, `element_selector`, `element_text`, `
 
 Masked content appears as `[redacted]` in `element_text` and as black boxes in screenshots. Query values in `page_url` are saved as `…`. Don't try to recover any of it.
 
-If the project stores redlines in Supabase (`storage: 'supabase'` in `redline.config.ts`), run `node --env-file=.env redline/redline.mjs pull` first to copy them into `redline/feedback.json`.
+Run `node redline/redline.mjs mode` to see whether this project syncs with a remote inbox (`remote <host>`) or is local-only (`local`). Remote mode is set by `.env.redline` in the project root; `check` and `fix` pull first, and `fix` and `defer` push after.
 
 Screenshots are stored in `redline/screenshots/` in the project root. When a redline has a screenshot, `screenshot_path` points to it (e.g., `redline/screenshots/{id}.png`). Read the screenshot when fixing to understand the visual context.
 

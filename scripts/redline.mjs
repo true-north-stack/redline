@@ -2,11 +2,18 @@
 // Redline CLI — copy to your project as redline/redline.mjs. No dependencies.
 //
 //   node redline/redline.mjs purge [--days N]   Delete local redlines past retention, plus their screenshots
-//   node redline/redline.mjs pull               Copy Supabase redlines into redline/feedback.json
+//   node redline/redline.mjs mode               Print `local`, or `remote <host>` when a remote is configured
+//   node redline/redline.mjs pull               Sync the inbox into redline/feedback.json (inbox wins on conflict)
+//   node redline/redline.mjs push               Send local status changes for pulled items to the inbox
 //
 // purge uses each item's expires_at; --days N instead deletes anything older than N days.
-// pull reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) from the
-// environment, e.g. `node --env-file=.env redline/redline.mjs pull`.
+// pull and push talk to the redline-sync edge function, never to Supabase directly, so this
+// machine holds only a sync secret and no service-role key. Configure them with
+// REDLINE_REMOTE_URL and REDLINE_SYNC_SECRET, from the environment or a gitignored
+// .env.redline in the project root:
+//
+//   REDLINE_REMOTE_URL=https://<project>.supabase.co
+//   REDLINE_SYNC_SECRET=<the secret set on the redline-sync function>
 
 import { readFile, writeFile, mkdir, unlink } from 'fs/promises'
 import { join } from 'path'
@@ -75,48 +82,159 @@ async function purge() {
   console.log(`Purged ${gone.length} redline${gone.length === 1 ? '' : 's'} and ${screenshots} screenshot${screenshots === 1 ? '' : 's'}.`)
 }
 
-async function pull() {
-  const url = process.env.SUPABASE_URL?.replace(/\/$/, '')
-  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
-  const bucket = process.env.REDLINE_BUCKET || 'redline-screenshots'
-  if (!url || !key) throw new Error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY).')
-  const auth = { apikey: key, Authorization: `Bearer ${key}` }
-
-  const res = await fetch(`${url}/rest/v1/items?select=*&order=created_at.asc`, {
-    headers: { ...auth, 'Accept-Profile': 'feedback' },
-  })
-  if (!res.ok) throw new Error(`Supabase read failed: ${res.status} ${await res.text()}`)
-  const remote = await res.json()
-
-  const items = await readItems()
-  const known = new Set(items.map((r) => r.id))
-  let added = 0
-  for (const r of remote) {
-    if (known.has(r.id)) continue
-    let screenshotPath = null
-    if (r.screenshot_path && !/^[\w-]+\.(png|jpg)$/.test(r.screenshot_path)) {
-      console.warn(`Skipping screenshot for ${r.id}: unexpected path ${JSON.stringify(r.screenshot_path)}`)
-    } else if (r.screenshot_path) {
-      const img = await fetch(`${url}/storage/v1/object/authenticated/${bucket}/${r.screenshot_path}`, { headers: auth })
-      if (img.ok) {
-        await mkdir(screenshotsDir, { recursive: true })
-        await writeFile(join(screenshotsDir, r.screenshot_path), Buffer.from(await img.arrayBuffer()))
-        screenshotPath = `redline/screenshots/${r.screenshot_path}`
-      } else {
-        console.warn(`Screenshot for ${r.id} not downloaded (${img.status}); saving the redline without it.`)
-      }
+// Remote config: environment first, then a minimal KEY=VALUE parse of <root>/.env.redline
+async function loadRemote() {
+  const file = {}
+  try {
+    for (const line of (await readFile(join(root, '.env.redline'), 'utf-8')).split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i.exec(line)
+      if (!m || line.trim().startsWith('#')) continue
+      file[m[1]] = m[2].replace(/^(["'])(.*)\1$/, '$2')
     }
-    items.push({ ...r, screenshot_path: screenshotPath })
-    added++
+  } catch {
+    // no .env.redline
   }
-  if (added) await writeItems(items)
-  console.log(`Pulled ${added} new redline${added === 1 ? '' : 's'} (${remote.length - added} already local).`)
+  const url = (process.env.REDLINE_REMOTE_URL || file.REDLINE_REMOTE_URL || '').replace(/\/+$/, '')
+  const secret = process.env.REDLINE_SYNC_SECRET || file.REDLINE_SYNC_SECRET || ''
+  return url ? { url, secret } : null
 }
 
-const commands = { purge, pull }
+async function requireRemote() {
+  const remote = await loadRemote()
+  if (!remote || !remote.secret) {
+    throw new Error('No remote configured. Set REDLINE_REMOTE_URL and REDLINE_SYNC_SECRET in .env.redline in the project root (or in the environment).')
+  }
+  let host
+  try {
+    host = new URL(remote.url).host
+  } catch {
+    throw new Error(`REDLINE_REMOTE_URL is not a URL: ${JSON.stringify(remote.url)}`)
+  }
+  console.log(`Supabase: ${host}`)
+  return remote
+}
+
+async function sync(remote, body) {
+  const res = await fetch(`${remote.url}/functions/v1/redline-sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-redline-sync-secret': remote.secret },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) throw new Error('The sync secret was rejected (401). Check REDLINE_SYNC_SECRET.')
+  let json = null
+  try {
+    json = await res.json()
+  } catch {
+    // non-JSON error body
+  }
+  return { status: res.status, json }
+}
+
+async function mode() {
+  const remote = await loadRemote()
+  if (!remote) return console.log('local')
+  try {
+    console.log(`remote ${new URL(remote.url).host}`)
+  } catch {
+    throw new Error(`REDLINE_REMOTE_URL is not a URL: ${JSON.stringify(remote.url)}`)
+  }
+}
+
+async function downloadScreenshot(r) {
+  if (!r.screenshot_path) return null
+  if (!/^[\w-]+\.(png|jpg)$/.test(r.screenshot_path)) {
+    console.warn(`Skipping screenshot for ${r.id}: unexpected path ${JSON.stringify(r.screenshot_path)}`)
+    return null
+  }
+  if (!r.screenshot_url) {
+    console.warn(`Screenshot for ${r.id} is no longer in storage; saving the redline without it.`)
+    return null
+  }
+  const img = await fetch(r.screenshot_url)
+  if (!img.ok) {
+    console.warn(`Screenshot for ${r.id} not downloaded (${img.status}); saving the redline without it.`)
+    return null
+  }
+  await mkdir(screenshotsDir, { recursive: true })
+  await writeFile(join(screenshotsDir, r.screenshot_path), Buffer.from(await img.arrayBuffer()))
+  return `redline/screenshots/${r.screenshot_path}`
+}
+
+async function pull() {
+  const remote = await requireRemote()
+  const { status, json } = await sync(remote, { action: 'list' })
+  if (status !== 200 || !Array.isArray(json?.items)) throw new Error(`Remote list failed (${status}).`)
+
+  const items = await readItems()
+  const byId = new Map(items.map((r) => [r.id, r]))
+  let added = 0
+  let updated = 0
+  let discarded = 0
+  for (const { screenshot_url, ...r } of json.items) {
+    const synced = { source: 'remote', remote_status: r.status, remote_status_updated_at: r.status_updated_at }
+    const local = byId.get(r.id)
+    if (!local) {
+      const screenshotPath = await downloadScreenshot({ ...r, screenshot_url })
+      const item = { ...r, screenshot_path: screenshotPath, ...synced }
+      items.push(item)
+      byId.set(r.id, item)
+      added++
+      continue
+    }
+    if (local.source !== 'remote') continue
+    const untouched = local.status === local.remote_status
+    const remoteMoved = local.remote_status_updated_at !== r.status_updated_at
+    if (!untouched && !remoteMoved) continue // unpushed local change, remote unchanged: push will send it
+    if (!untouched && local.status !== r.status) {
+      console.log(`Discarded local change on ${r.id} (${r.page_url}): ${local.status} → kept ${r.status}`)
+      discarded++
+    }
+    const screenshotPath = local.screenshot_path ?? (await downloadScreenshot({ ...r, screenshot_url }))
+    const changed = local.status !== r.status || remoteMoved
+    Object.assign(local, r, { screenshot_path: screenshotPath }, synced)
+    if (changed) updated++
+  }
+  await writeItems(items)
+  console.log(`Pulled ${added} new, ${updated} updated${discarded ? `, ${discarded} local change${discarded === 1 ? '' : 's'} discarded` : ''} (${json.items.length} in the inbox).`)
+}
+
+async function push() {
+  const remote = await requireRemote()
+  const items = await readItems()
+  let pushed = 0
+  let conflicts = 0
+  try {
+    for (const r of items) {
+      if (r.source !== 'remote' || r.status === r.remote_status) continue
+      const { status, json } = await sync(remote, {
+        action: 'set_status',
+        id: r.id,
+        status: r.status,
+        expected_status_updated_at: r.remote_status_updated_at,
+      })
+      if (status === 200 && json?.item) {
+        r.remote_status = json.item.status
+        r.remote_status_updated_at = json.item.status_updated_at
+        pushed++
+      } else if (status === 409) {
+        console.log(`Conflict on ${r.id}: changed in the inbox. Run pull.`)
+        conflicts++
+      } else if (status === 404) {
+        console.log(`Not found on ${r.id}: it is gone from the inbox (purged?). Left as is.`)
+      } else {
+        throw new Error(`Push failed for ${r.id} (${status}).`)
+      }
+    }
+  } finally {
+    if (items.length) await writeItems(items)
+  }
+  console.log(`Pushed ${pushed} status change${pushed === 1 ? '' : 's'}${conflicts ? `, ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}.`)
+}
+
+const commands = { purge, mode, pull, push }
 const command = commands[process.argv[2]]
 if (!command) {
-  console.log('Usage: node redline/redline.mjs <purge [--days N] | pull>')
+  console.log('Usage: node redline/redline.mjs <purge [--days N] | mode | pull | push>')
   process.exit(process.argv[2] ? 1 : 0)
 }
 command().catch((err) => {

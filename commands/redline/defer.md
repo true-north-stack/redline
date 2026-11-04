@@ -5,6 +5,7 @@ argument-hint: "<number|list|undo number>"
 allowed-tools:
   - Read
   - Write
+  - Bash
 ---
 
 # Redline Defer
@@ -43,3 +44,7 @@ Reopen a deferred redline by its position in the deferred list:
 4. Update its `status` to `'open'`
 5. Write the updated array back to `redline/feedback.json`
 6. Confirm which redline was reopened
+
+## After any change
+
+After deferring or reopening, if `node redline/redline.mjs mode` prints `remote`, run `node redline/redline.mjs push` as the last step and relay any `Conflict on` lines. Skip this for `list`.

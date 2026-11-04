@@ -74,6 +74,14 @@ test('local purge deletes expired items and their screenshots, keeps the rest', 
   expect((await store.list()).map((r) => r.id)).toEqual([fresh.id])
 })
 
+test('mode prints local without remote config', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'redline-'))
+  const env: Record<string, string | undefined> = { ...process.env, REDLINE_ROOT: root }
+  delete env.REDLINE_REMOTE_URL
+  delete env.REDLINE_SYNC_SECRET
+  expect(execFileSync('node', [CLI, 'mode'], { env, encoding: 'utf-8' }).trim()).toBe('local')
+})
+
 test('CLI purge: expires_at by default, --days overrides', async () => {
   const root = await mkdtemp(join(tmpdir(), 'redline-'))
   await mkdir(join(root, 'redline', 'screenshots'), { recursive: true })

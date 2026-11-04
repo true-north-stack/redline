@@ -14,6 +14,11 @@ allowed-tools:
 
 Fix redlines stored in `redline/feedback.json` in the project root.
 
+## First step (remote mode)
+
+First run `node redline/redline.mjs mode`. If the output starts with `remote`, run `node redline/redline.mjs pull` before reading the file, and relay any `Discarded local change` lines to the user. If the output is `local`, skip syncing.
+
+
 ## If a UUID argument is provided
 
 Fix a specific redline by ID (works for open OR deferred):
@@ -41,5 +46,10 @@ For each redline:
 6. Mark as fixed: read `redline/feedback.json`, update the matching entry's `status` to `'fixed'`, write the file back
 
 After all fixes, report what was done.
+
+## Sync back (remote mode)
+
+If `node redline/redline.mjs mode` printed `remote`, finish by running `node redline/redline.mjs push` and relay any `Conflict on` lines (the inbox changed that item; tell the user to run `/redline` again, which pulls and settles it).
+
 
 If a redline is unclear or can't be fixed automatically, flag it and move on. Don't skip silently.
