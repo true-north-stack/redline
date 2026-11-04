@@ -114,9 +114,26 @@ test('list passes filters through and merges the summary', async () => {
 test('list rejects an unknown status, bad tester, bad limit and malformed cursor with 400', async () => {
   const { h } = setup()
   expect((await h.list(getReq('?status=bogus'))).status).toBe(400)
-  expect((await h.list(getReq('?tester=nope'))).status).toBe(400)
+  expect((await h.list(getReq('?tester=' + 'x'.repeat(201)))).status).toBe(400)
   expect((await h.list(getReq('?limit=abc'))).status).toBe(400)
   expect((await h.list(getReq('?cursor=bad'))).status).toBe(400)
+})
+
+test('list passes a free-text tester id through', async () => {
+  const { h, store } = setup()
+  expect((await h.list(getReq('?tester=tester-1'))).status).toBe(200)
+  expect(store.queries[0].testerId).toBe('tester-1')
+})
+
+test('a throwing isAdmin is a no-store 404 with no store calls', async () => {
+  const store = memoryStore([item(A)])
+  const h = createAdminHandlers({ config: { storage: 'supabase' }, store, isAdmin: async () => { throw new Error('auth down') } })
+  const body = { status: 'fixed', expected_status_updated_at: 'stamp-0' }
+  for (const res of [await h.list(getReq()), await h.get(getReq(), A), await h.patch(patchReq(body), A)]) {
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBe(NS)
+  }
+  expect(store.calls).toEqual([])
 })
 
 test('list labels testers via describeTesters, falling back to the raw id', async () => {

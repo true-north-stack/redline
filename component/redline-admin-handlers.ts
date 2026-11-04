@@ -31,7 +31,12 @@ export function createAdminHandlers(o: AdminHandlerOptions) {
   /** Admin id, or null when the caller must see a 404 (local mode, or not an admin). */
   async function gate(req: Request): Promise<{ id: string } | null> {
     if (!enabled) return null
-    return isAdmin(req)
+    try {
+      return await isAdmin(req)
+    } catch {
+      console.error('[redline] isAdmin failed')
+      return null
+    }
   }
 
   async function labels(ids: (string | null)[]): Promise<Record<string, string>> {
@@ -58,7 +63,8 @@ export function createAdminHandlers(o: AdminHandlerOptions) {
     const limitRaw = p.get('limit')
 
     if (status && !STATUSES.includes(status as RedlineStatus)) return bad('invalid status')
-    if (tester && !isUuid(tester)) return bad('invalid tester')
+    // tester_id is host-defined free text; the store encodes it safely
+    if (tester && tester.length > 200) return bad('invalid tester')
     let limit: number | undefined
     if (limitRaw) {
       limit = Number(limitRaw)
