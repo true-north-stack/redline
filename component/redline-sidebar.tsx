@@ -52,7 +52,8 @@ export function RedlineSidebar({ isActive, onToggle, apiUrl = '/api/redlines' }:
 
   function handleNavigate(pageUrl: string) {
     setShowList(false)
-    router.push(pageUrl)
+    // Saved URLs keep query keys but redact values (?q=…), so navigate without the query
+    router.push(pageUrl.replace(/\?[^#]*/, ''))
   }
 
   function formatTime(dateStr: string): string {

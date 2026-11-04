@@ -1,12 +1,16 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { maskSelectors, sanitizePageUrl } from './redline-config'
+import { captureMasked, redactedText } from './redline-mask'
 
 interface RedlineInspectorProps {
   active: boolean
   onDeactivate: () => void
   apiUrl?: string
   initialMode?: InspectorMode
+  /** Extra selectors to mask in screenshots and captured text, on top of [data-phi] */
+  phiSelectors?: string[]
 }
 
 type InspectorMode = 'element' | 'area'
@@ -63,13 +67,16 @@ function normalizeArea(area: AreaRect): { x: number; y: number; w: number; h: nu
   return { x, y, w, h }
 }
 
-export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element' }: RedlineInspectorProps) {
+export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors }: RedlineInspectorProps) {
   const [hoveredEl, setHoveredEl] = useState<HTMLElement | null>(null)
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
   const [feedback, setFeedback] = useState('')
   const [includeScreenshot, setIncludeScreenshot] = useState(false)
+  // Masking or capture failed for the current selection: no screenshot can be attached
+  const [screenshotDropped, setScreenshotDropped] = useState(false)
   const [requestUxReview, setRequestUxReview] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const screenshotCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -107,8 +114,26 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
   }, [active])
 
+  // Selectors to mask; joined so effects only re-run when the list actually changes
+  const masksKey = maskSelectors(phiSelectors).join('\n')
+
+  // Element text as it will be saved (masked), shown in the modal
+  const selectedText = useMemo(() => {
+    if (!selectedEl) return null
+    try {
+      return redactedText(selectedEl, masksKey.split('\n'), 80)
+    } catch {
+      return null
+    }
+  }, [selectedEl, masksKey])
+
   // Whether the feedback modal is showing
   const showingFeedback = !!(selectedEl || areaComplete)
+
+  // Clear a stale submit error whenever the modal closes
+  useEffect(() => {
+    if (!showingFeedback) setSubmitError(null)
+  }, [showingFeedback])
 
   // ---------------------------------------------------------------------------
   // Element mode: hover tracking + click to select
@@ -169,12 +194,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Capture area screenshot
   const captureArea = useCallback(async (area: AreaRect) => {
     const { x, y, w, h } = normalizeArea(area)
+    setScreenshotDropped(false)
     try {
-      const { domToCanvas } = await import('modern-screenshot')
       const dpr = window.devicePixelRatio || 1
       const scrollX = window.scrollX
       const scrollY = window.scrollY
-      const fullCanvas = await domToCanvas(document.documentElement, {
+      const fullCanvas = await captureMasked(document.documentElement, masksKey.split('\n'), {
         backgroundColor: '#1a1a1a',
         scale: dpr,
       })
@@ -198,13 +223,16 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       console.log('[redline] area screenshot captured:', w, 'x', h)
       setTimeout(() => inputRef.current?.focus(), 50)
     } catch (err) {
-      console.warn('[redline] area screenshot capture failed:', err)
+      // Masking or capture failed: drop the screenshot rather than send it unmasked
+      console.warn('[redline] area screenshot dropped:', err)
       screenshotCanvasRef.current = null
+      setIncludeScreenshot(false)
+      setScreenshotDropped(true)
       // Still show feedback modal even if capture fails
       setAreaComplete(true)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
-  }, [])
+  }, [masksKey])
 
   // ---------------------------------------------------------------------------
   // Area mode: drag to select region
@@ -216,7 +244,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
     function handleMouseDown(e: MouseEvent) {
       const el = e.target as HTMLElement
-      if (el.closest('[data-redline-ui]')) return
+      // The interaction overlay is Redline UI too, but dragging on it is the point
+      if (el.closest('[data-redline-ui]') && !el.hasAttribute('data-redline-area-overlay')) return
       e.preventDefault()
       e.stopPropagation()
       draggingRef.current = true
@@ -281,23 +310,28 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
     async function captureElement() {
       if (!selectedEl) return
+      setScreenshotDropped(false)
       try {
-        const { domToCanvas } = await import('modern-screenshot')
-        const canvas = await domToCanvas(selectedEl, {
+        const canvas = await captureMasked(selectedEl, masksKey.split('\n'), {
           backgroundColor: '#1a1a1a',
           scale: 2,
         })
         screenshotCanvasRef.current = canvas
         console.log('[redline] screenshot captured:', canvas.width, 'x', canvas.height)
       } catch (err) {
-        console.warn('[redline] screenshot capture failed:', err)
+        // Masking or capture failed: drop the screenshot rather than send it unmasked
+        console.warn('[redline] screenshot dropped:', err)
         screenshotCanvasRef.current = null
+        // Uncheck, even if the tester ticked it while the capture ran, so the form never
+        // claims a screenshot that will not be sent
+        setIncludeScreenshot(false)
+        setScreenshotDropped(true)
       }
     }
 
     captureElement()
     setTimeout(() => inputRef.current?.focus(), 50)
-  }, [selectedEl, areaComplete])
+  }, [selectedEl, areaComplete, masksKey])
 
   // Keyboard: Escape to cancel, 's' to toggle mode
   useEffect(() => {
@@ -350,15 +384,21 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     if (!feedback.trim()) return
     if (!selectedEl && !areaComplete) return
     setSubmitting(true)
+    setSubmitError(null)
 
     const isArea = !selectedEl && areaComplete
     const selectorStr = isArea
       ? `area-screenshot:${areaRect ? (() => { const { x, y, w, h } = normalizeArea(areaRect); return `${x},${y},${w},${h}` })() : 'unknown'}`
       : generateSelector(selectedEl!)
-    const elementText = isArea
-      ? null
-      : selectedEl!.textContent?.slice(0, 200) || null
-    const pageUrl = window.location.pathname + window.location.search + window.location.hash
+    let elementText: string | null = null
+    if (!isArea) {
+      try {
+        elementText = redactedText(selectedEl!, masksKey.split('\n'), 200)
+      } catch (err) {
+        console.warn('[redline] element text dropped:', err)
+      }
+    }
+    const pageUrl = sanitizePageUrl(window.location.pathname + window.location.search + window.location.hash)
 
     try {
       console.log('[redline] submit: includeScreenshot=', includeScreenshot, 'canvasRef=', !!screenshotCanvasRef.current)
@@ -369,6 +409,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         })
       }
 
+      let res: Response
       if (screenshotBlob) {
         const formData = new FormData()
         formData.append('page_url', pageUrl)
@@ -377,9 +418,9 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         formData.append('feedback', feedback.trim())
         formData.append('ux_review_requested', String(requestUxReview))
         formData.append('screenshot', screenshotBlob, 'screenshot.png')
-        await fetch(apiUrl, { method: 'POST', body: formData })
+        res = await fetch(apiUrl, { method: 'POST', body: formData })
       } else {
-        await fetch(apiUrl, {
+        res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -391,6 +432,14 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           }),
         })
       }
+      if (!res.ok) {
+        setSubmitError(
+          res.status === 401
+            ? 'Sign in to leave feedback.'
+            : `Couldn't save your feedback (${res.status}). Try again.`,
+        )
+        return
+      }
       window.dispatchEvent(new CustomEvent('redline:submitted'))
       setSelectedEl(null)
       setAreaComplete(false)
@@ -399,11 +448,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setIncludeScreenshot(false)
       onDeactivate()
     } catch {
-      // silently fail
+      setSubmitError("Couldn't reach the server. Try again.")
     } finally {
       setSubmitting(false)
     }
-  }, [selectedEl, areaComplete, areaRect, feedback, includeScreenshot, requestUxReview, apiUrl, onDeactivate])
+  }, [selectedEl, areaComplete, areaRect, feedback, includeScreenshot, requestUxReview, apiUrl, onDeactivate, masksKey])
 
   if (!active) return null
 
@@ -417,7 +466,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Current page URL — shown in the feedback modal and saved with every redline
   const pageUrl =
     typeof window !== 'undefined'
-      ? window.location.pathname + window.location.search + window.location.hash
+      ? sanitizePageUrl(window.location.pathname + window.location.search + window.location.hash)
       : ''
 
   // Dimensions tooltip for area drag
@@ -545,6 +594,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               (dropdowns, menus, etc.) don't receive mousedown/blur and stay open */}
           <div
             data-redline-ui
+            data-redline-area-overlay
             style={{
               position: 'fixed',
               inset: 0,
@@ -711,9 +761,9 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 <div style={{ fontSize: 11, color: '#888', marginBottom: 8, fontFamily: 'monospace', padding: '6px 8px', backgroundColor: '#111', borderRadius: 6, wordBreak: 'break-all' }}>
                   {generateSelector(selectedEl)}
                 </div>
-                {selectedEl.textContent && (
+                {selectedText && (
                   <div style={{ fontSize: 11, color: '#aaa', marginBottom: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    &ldquo;{selectedEl.textContent.slice(0, 80)}&rdquo;
+                    &ldquo;{selectedText}&rdquo;
                   </div>
                 )}
               </>
@@ -755,7 +805,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               ref={inputRef}
               data-redline-ui
               value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
+              onChange={(e) => { setFeedback(e.target.value); setSubmitError(null) }}
               placeholder="What's wrong? What should change?"
               onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleSubmit() }}
               style={{
@@ -772,6 +822,9 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 fontFamily: 'inherit',
               }}
             />
+            <div style={{ fontSize: 10, color: '#666', marginTop: 4 }}>
+              Masked fields are blacked out in screenshots. Don&rsquo;t type patient or personal details here.
+            </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
               <label
@@ -781,12 +834,18 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 <input
                   type="checkbox"
                   data-redline-ui
-                  checked={includeScreenshot}
+                  checked={includeScreenshot && !screenshotDropped}
+                  disabled={screenshotDropped}
                   onChange={(e) => setIncludeScreenshot(e.target.checked)}
                   style={{ accentColor: '#ef4444' }}
                 />
                 Include Screenshot
               </label>
+              {screenshotDropped && (
+                <div data-redline-ui style={{ fontSize: 10, color: '#f87171', marginTop: -2 }}>
+                  Screenshot dropped: masking failed.
+                </div>
+              )}
               <label
                 data-redline-ui
                 style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}
@@ -801,6 +860,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 Request UX Review
               </label>
             </div>
+
+            {submitError && (
+              <div role="alert" style={{ fontSize: 12, color: '#f87171', marginTop: 10 }}>
+                {submitError}
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <button

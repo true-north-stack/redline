@@ -5,11 +5,14 @@ argument-hint: "<number|list|undo number>"
 allowed-tools:
   - Read
   - Write
+  - Bash
 ---
 
 # Redline Defer
 
 Storage: `redline/feedback.json` in the project root.
+
+Never edit `source`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
 
 ## If argument is "list"
 
@@ -43,3 +46,9 @@ Reopen a deferred redline by its position in the deferred list:
 4. Update its `status` to `'open'`
 5. Write the updated array back to `redline/feedback.json`
 6. Confirm which redline was reopened
+
+## After any change
+
+If `redline/redline.mjs` does not exist in the project root (check with `test -f redline/redline.mjs`), this project was installed before remote sync existed and is local-only: skip every sync step in this command, carry on exactly as below, and at the end suggest re-running the install prompt from AGENT-INSTALLATION.md (github.com/true-north-stack/redline) to get remote sync.
+
+Otherwise, after deferring or reopening, if `node redline/redline.mjs mode` prints `remote`, run `node redline/redline.mjs push` as the last step and relay any `Conflict on` lines. Skip this for `list`.
