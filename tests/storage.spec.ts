@@ -129,6 +129,12 @@ test('page URLs keep path and query keys, never values or token fragments', () =
   expect(sanitizePageUrl('/settings#billing')).toBe('/settings#billing')
   expect(sanitizePageUrl('/auth/callback#access_token=abc&refresh_token=def')).toBe('/auth/callback')
   expect(sanitizePageUrl('https://app.example.com/jobs/123?token=secret')).toBe('/jobs/123?token=…')
+  // Protocol-relative and backslash forms parse as a host, so only the path survives
+  expect(sanitizePageUrl('//evil.com/x')).toBe('/x')
+  expect(sanitizePageUrl('/\\evil.com')).toBe('/')
+  // A real path that starts with extra slashes collapses to one, so it can't read as //host
+  expect(sanitizePageUrl('https://app.example.com//evil.com/x?a=1')).toBe('/evil.com/x?a=…')
+  expect(sanitizePageUrl('https://app.example.com/\\evil.com')).toBe('/evil.com')
 })
 
 test('local store inbox methods reject', async () => {

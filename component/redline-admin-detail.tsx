@@ -27,6 +27,9 @@ function stripQuery(url: string) {
   return url.replace(/\?[^#]*/, '')
 }
 
+/** Same-origin path only: exactly one leading slash, never // or /\ */
+const SAFE_PATH = /^\/(?![/\\])/
+
 function deletesIn(expiresAt: string): string {
   const days = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / DAY_MS)
   if (days <= 0) return 'Deletes today'
@@ -54,6 +57,8 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
   const current = useRef(id)
   current.current = id
   const closeRef = useRef<HTMLButtonElement>(null)
+  const thumbRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
 
   const fetchItem = useCallback(
     async (forId: string): Promise<AdminDetail | 'gone' | 'error'> => {
@@ -76,6 +81,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
     setViewer(false)
     setNotice(null)
     setActionError(null)
+    setBusy(false)
     const forId = id
     const r = await fetchItem(forId)
     if (current.current !== forId) return
@@ -98,10 +104,36 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
     if (!viewer) return
     closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setViewer(false)
+      if (e.key === 'Escape') {
+        setViewer(false)
+        return
+      }
+      if (e.key !== 'Tab') return
+      const nodes = dialogRef.current?.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])')
+      if (!nodes || nodes.length === 0) return
+      const first = nodes[0]
+      const last = nodes[nodes.length - 1]
+      const active = document.activeElement
+      if (!dialogRef.current?.contains(active)) {
+        e.preventDefault()
+        first.focus()
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [viewer])
+
+  // Return focus to the thumbnail when the viewer closes
+  const wasOpen = useRef(false)
+  useEffect(() => {
+    if (wasOpen.current && !viewer) thumbRef.current?.focus()
+    wasOpen.current = viewer
   }, [viewer])
 
   async function onImageError() {
@@ -134,27 +166,28 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, expected_status_updated_at: detail.status_updated_at }),
       })
-      if (current.current !== forId) return
+      const live = () => current.current === forId
       if (res.status === 404) {
-        setLoad('gone')
+        if (live()) setLoad('gone')
         onGone(forId)
       } else if (res.status === 409) {
         const { current: latest } = (await res.json()) as { current: AdminItem }
-        if (current.current !== forId) return
-        setDetail((d) => (d ? { ...d, ...latest } : d))
-        setNotice('Changed elsewhere. Showing the latest.')
+        if (live()) {
+          setDetail((d) => (d ? { ...d, ...latest } : d))
+          setNotice('Changed elsewhere. Showing the latest.')
+        }
       } else if (res.ok) {
         const updated = (await res.json()) as AdminItem
-        if (current.current !== forId) return
-        setDetail((d) => (d ? { ...d, ...updated } : d))
+        // The server changed regardless of what is on screen now: always report it
+        if (live()) setDetail((d) => (d ? { ...d, ...updated } : d))
         onStatusChanged(updated, previous)
-      } else {
+      } else if (live()) {
         setActionError('Could not update the status. Try again.')
       }
     } catch {
       if (current.current === forId) setActionError('Could not update the status. Try again.')
     } finally {
-      setBusy(false)
+      if (current.current === forId) setBusy(false)
     }
   }
 
@@ -227,6 +260,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
       <div className="rounded-lg border border-border bg-card p-3">
         {showShot ? (
           <button
+            ref={thumbRef}
             type="button"
             aria-label="Open screenshot"
             onClick={() => setViewer(true)}
@@ -251,13 +285,18 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
         <div className="min-w-0 sm:col-span-2">
           <dt className="text-xs text-muted-foreground">Page</dt>
           <dd>
-            <a
-              href={stripQuery(detail.page_url)}
-              className="inline-flex min-h-[44px] items-center gap-1.5 break-all font-mono text-xs text-primary underline"
-            >
-              {detail.page_url}
-              <ExternalLink className="h-3 w-3 shrink-0" />
-            </a>
+            {SAFE_PATH.test(stripQuery(detail.page_url)) ? (
+              <a
+                href={stripQuery(detail.page_url)}
+                rel="noreferrer"
+                className="inline-flex min-h-[44px] items-center gap-1.5 break-all font-mono text-xs text-primary underline"
+              >
+                {detail.page_url}
+                <ExternalLink className="h-3 w-3 shrink-0" />
+              </a>
+            ) : (
+              <span className="break-all font-mono text-xs text-foreground">{detail.page_url}</span>
+            )}
           </dd>
         </div>
         <Field label="Element" value={detail.element_selector} mono />
@@ -288,6 +327,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
 
       {viewer && showShot && (
         <div
+          ref={dialogRef}
           role="dialog"
           aria-modal="true"
           aria-label="Screenshot"
@@ -306,6 +346,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
           <img
             src={detail.screenshot_url!}
             alt="Screenshot of the page"
+            onError={onImageError}
             onClick={(e) => e.stopPropagation()}
             className="max-h-full max-w-full object-contain"
           />

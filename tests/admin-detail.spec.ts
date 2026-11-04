@@ -123,3 +123,75 @@ test('Back shows only below 1024px', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await expect(back).toBeHidden()
 })
+
+test('unsafe or protocol-relative page_url renders as text, never a link', async ({ page }) => {
+  for (const bad of ['javascript:alert(1)', '//evil.example/x', '/\\evil.example']) {
+    await openAdmin(page, { view: 'detail', id: ID, items: [makeItem({ page_url: bad })] })
+    await expect(page.getByText(bad, { exact: true })).toBeVisible()
+    await expect(page.locator('a[href]')).toHaveCount(0)
+  }
+})
+
+test('a PATCH that resolves after switching items is still reported', async ({ page }) => {
+  const other = makeItem({ id: '22222222-2222-4222-8222-222222222222', feedback: 'Second item' })
+  await openAdmin(page, { view: 'detail', id: ID, items: [item, other], patchDelayMs: 400 })
+  await page.getByRole('button', { name: 'Mark fixed' }).click()
+  await page.evaluate((id) => (window as any).__setId(id), other.id)
+  await expect(page.getByText('Second item')).toBeVisible()
+  // The new item's actions are usable while the old PATCH is in flight
+  await expect(page.getByRole('button', { name: 'Mark fixed' })).toBeEnabled()
+  await expect.poll(async () => (await events(page)).filter((e) => e.type === 'statusChanged').length).toBe(1)
+  const ev = (await events(page)).find((e) => e.type === 'statusChanged')!
+  expect(ev.payload.item.id).toBe(ID)
+  expect(ev.payload.item.status).toBe('fixed')
+  expect(ev.payload.previous.status).toBe('open')
+  // The late result must not repaint the item now on screen
+  await expect(page.getByText('Second item')).toBeVisible()
+  await expect(page.getByTestId('status')).toHaveText(/open/i)
+})
+
+test('viewer: focus moves in, Tab stays inside, Escape returns focus to the thumbnail', async ({ page }) => {
+  await openAdmin(page, { view: 'detail', id: ID, items: [item] })
+  const thumb = page.getByRole('button', { name: 'Open screenshot' })
+  await thumb.click()
+  const dialog = page.getByRole('dialog')
+  const close = page.getByRole('button', { name: 'Close screenshot' })
+  await expect(close).toBeFocused()
+  for (const key of ['Tab', 'Tab', 'Shift+Tab']) {
+    await page.keyboard.press(key)
+    expect(await page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]'))).toBe(true)
+  }
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(thumb).toBeFocused()
+})
+
+test('viewer closes from the close button and from a backdrop click', async ({ page }) => {
+  await openAdmin(page, { view: 'detail', id: ID, items: [item] })
+  const dialog = page.getByRole('dialog')
+  await page.getByRole('button', { name: 'Open screenshot' }).click()
+  await page.getByRole('button', { name: 'Close screenshot' }).click()
+  await expect(dialog).toBeHidden()
+  await page.getByRole('button', { name: 'Open screenshot' }).click()
+  await dialog.click({ position: { x: 5, y: 300 } })
+  await expect(dialog).toBeHidden()
+})
+
+test('no horizontal scroll at 390px with very long content', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 })
+  const long = (n: number, ch = 'a') => ch.repeat(n)
+  await openAdmin(page, {
+    view: 'detail', id: ID,
+    items: [makeItem({
+      feedback: long(2000),
+      page_url: '/' + long(299),
+      element_text: long(400),
+      element_selector: long(300),
+      user_agent: long(300),
+      app_version: long(80),
+      tester_label: long(120),
+    })],
+  })
+  await expect(page.getByTestId('status')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+})

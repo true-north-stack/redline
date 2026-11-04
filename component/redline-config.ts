@@ -60,5 +60,7 @@ export function sanitizePageUrl(raw: string): string {
   const keys = Array.from(url.searchParams.keys())
   const query = keys.length ? '?' + keys.map((k) => `${encodeURIComponent(k)}=…`).join('&') : ''
   const hash = /^#[\w-]*$/.test(url.hash) ? url.hash : ''
-  return url.pathname + query + hash
+  // Collapse leading slashes/backslashes so a path can never read as protocol-relative (//host)
+  const path = url.pathname.replace(/^[/\\]+/, '/')
+  return path + query + hash
 }

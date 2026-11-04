@@ -43,6 +43,8 @@ export interface OpenAdminOpts {
   items: AdminItem[]
   failList?: boolean
   delayMs?: number
+  /** Extra delay on PATCH responses only. */
+  patchDelayMs?: number
   /** Screenshot requests fail (simulates an expired signed URL). */
   failImages?: boolean
   /** Next PATCH 409s after applying these fields as the "elsewhere" change. */
@@ -103,6 +105,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
         return route.fulfill(json(200, detail))
       }
       if (req.method() === 'PATCH') {
+        await wait(opts.patchDelayMs)
         if (purgeOnPatch) { purgeOnPatch = false; store.delete(id); return route.fulfill(json(404, { error: 'not found' })) }
         if (conflictWith) {
           Object.assign(item, conflictWith, { status_updated_at: `elsewhere-${Date.now()}` })
