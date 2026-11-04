@@ -17,3 +17,4 @@ Redline can now collect feedback from testers on a deployed build, not only from
 - Local mode keeps working. Projects that haven't re-run the installer yet are treated as local by the `/redline` commands, which suggest the upgrade.
 - The feedback route now needs Next.js 15.1 or later, for `after` from `next/server`.
 - Supabase mode is opt-in. Nothing changes until you follow the Supabase steps in the README and set `storage: 'supabase'`.
+- If a project already runs Supabase mode from a pre-release build, redeploy the `redline-sync` function (`supabase functions deploy redline-sync`) when you upgrade. The new CLI expects its paged listing, and against the old function a `pull` can drop the newest items from `redline/feedback.json`. The rows in Supabase are never touched.
