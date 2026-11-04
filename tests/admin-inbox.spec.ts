@@ -360,3 +360,53 @@ test('focus: after Mark fixed it is not on body; mobile open and Back move focus
     '00000000-0000-4000-8000-000000000002',
   )
 })
+
+// ---- Final review fixes ----
+
+test('a 409 in the detail pane refreshes the list: the row leaves Open, counts update, no Undo bar', async ({ page }) => {
+  await openAdmin(page, { view: 'inbox', items: [mk(1), mk(2), mk(3, { status: 'fixed' })], conflictWith: { status: 'fixed' } })
+  await expect(tab(page, 'Open')).toHaveText(/Open\s*2/)
+  await list(page).getByRole('button', { name: /Feedback 1/ }).click()
+  await expect(detail(page).getByText('Feedback 1')).toBeVisible()
+  await detail(page).getByRole('button', { name: 'Dismiss' }).click()
+  await expect(detail(page).getByText('Changed elsewhere. Showing the latest.')).toBeVisible()
+  await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
+  await expect(tab(page, 'Open')).toHaveText(/Open\s*1/)
+  await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*2/)
+  await expect(tab(page, 'All')).toHaveText(/All\s*3/)
+  await expect(page.getByTestId('undo-bar')).toHaveCount(0)
+  // The pane keeps showing the refreshed item so the notice is readable
+  await expect(detail(page).getByText('Feedback 1')).toBeVisible()
+})
+
+test('a 409 in All updates the row badge in place', async ({ page }) => {
+  await openAdmin(page, { view: 'inbox', items: [mk(1), mk(2)], conflictWith: { status: 'deferred' } })
+  await tab(page, 'All').click()
+  await list(page).getByRole('button', { name: /Feedback 1/ }).click()
+  await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
+  await expect(detail(page).getByText('Changed elsewhere. Showing the latest.')).toBeVisible()
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('deferred')
+  await expect(tab(page, 'Deferred')).toHaveText(/Deferred\s*1/)
+  await expect(page.getByTestId('undo-bar')).toHaveCount(0)
+})
+
+test('after Reopen the Undo bar reads "Reopened · Undo"', async ({ page }) => {
+  await openAdmin(page, { view: 'inbox', items: [mk(1, { status: 'fixed' })], search: '?status=fixed' })
+  await list(page).getByRole('button', { name: /Feedback 1/ }).click()
+  await detail(page).getByRole('button', { name: 'Reopen' }).click()
+  await expect(page.getByTestId('undo-bar')).toHaveText('Reopened · Undo')
+})
+
+test('below 1024px the list leaves room under Load more for the fixed Undo bar', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 })
+  const items = Array.from({ length: 60 }, (_, i) => mk(i + 1, { status: i === 0 ? 'fixed' : 'open' }))
+  await openAdmin(page, { view: 'inbox', items, search: '?status=all' })
+  await list(page).getByRole('button', { name: /Feedback 1\b/ }).first().click()
+  await detail(page).getByRole('button', { name: 'Reopen' }).click()
+  await page.getByRole('button', { name: 'Back' }).click()
+  await expect(page.getByTestId('undo-bar')).toBeVisible()
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const more = (await list(page).getByRole('button', { name: 'Load more' }).boundingBox())!
+  const bar = (await page.getByTestId('undo-bar').boundingBox())!
+  expect(more.y + more.height, 'Load more ends above the Undo bar').toBeLessThanOrEqual(bar.y)
+})

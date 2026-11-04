@@ -97,6 +97,11 @@ test('409 shows "Changed elsewhere. Showing the latest." and renders the current
   await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible()
   await expect(page.getByTestId('status')).toHaveText(/dismissed/i)
   expect((await events(page)).filter((e) => e.type === 'statusChanged')).toHaveLength(0)
+  const refreshed = (await events(page)).filter((e) => e.type === 'refreshed')
+  expect(refreshed).toHaveLength(1)
+  expect(refreshed[0].payload.latest.status).toBe('dismissed')
+  expect(refreshed[0].payload.previous.status).toBe('open')
+  expect(refreshed[0].payload.previous).not.toHaveProperty('screenshot_url')
 })
 
 test('a purged item shows the gone message', async ({ page }) => {

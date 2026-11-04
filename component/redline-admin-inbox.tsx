@@ -288,6 +288,16 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
     startUndo(item, previous.status)
   }
 
+  // A change made elsewhere won a race with ours (409). Same list and count update as a
+  // status change, but nothing to undo, and the pane stays on the item so its notice is seen.
+  function onRefreshed(latest: AdminItem, previous: AdminItem) {
+    invalidateLists()
+    bumpCounts(previous.status, latest.status)
+    const tab = qRef.current.status
+    if (tab !== 'all' && latest.status !== tab) removeRow(latest.id, false)
+    else setItems((list) => list.map((i) => (i.id === latest.id ? { ...i, ...latest } : i)))
+  }
+
   function onGone(id: string) {
     invalidateLists()
     const row = itemsRef.current.find((i) => i.id === id)
@@ -377,7 +387,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
         ref={listRef}
         data-testid="list-pane"
         hidden={!showList}
-        className="flex min-w-0 flex-col bg-background lg:w-[26rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-border"
+        className="flex min-w-0 flex-col bg-background pb-24 lg:w-[26rem] lg:pb-0 lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-border"
       >
         <h2 ref={headingRef} tabIndex={-1} className="sr-only">Tester feedback</h2>
         <div className="flex flex-col gap-3 border-b border-border p-3">
@@ -475,6 +485,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
             id={q.id}
             onBack={back}
             onStatusChanged={onStatusChanged}
+            onRefreshed={onRefreshed}
             onGone={onGone}
           />
         ) : (
@@ -492,7 +503,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
             <span>{undo.error}</span>
           ) : (
             <>
-              <span>{`Marked ${undo.item.status} · `}</span>
+              <span>{undo.item.status === 'open' ? 'Reopened · ' : `Marked ${undo.item.status} · `}</span>
               <button
                 type="button"
                 onClick={doUndo}

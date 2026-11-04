@@ -20,6 +20,7 @@ function Host() {
         id={id}
         onBack={() => log('back', null)}
         onStatusChanged={(item, previous) => log('statusChanged', { item, previous })}
+        onRefreshed={(latest, previous) => log('refreshed', { latest, previous })}
         onGone={(gone) => log('gone', gone)}
       />
     </div>

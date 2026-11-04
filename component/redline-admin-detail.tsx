@@ -13,6 +13,8 @@ export interface RedlineAdminDetailProps {
   id: string
   onBack?(): void
   onStatusChanged(item: AdminItem, previous: AdminItem): void
+  /** A PATCH lost to a change made elsewhere (409): `latest` is the item as it is now. */
+  onRefreshed?(latest: AdminItem, previous: AdminItem): void
   onGone(id: string): void
 }
 
@@ -45,7 +47,7 @@ function Field({ label, value, mono }: { label: string; value: string | null | u
   )
 }
 
-export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone }: RedlineAdminDetailProps) {
+export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefreshed, onGone }: RedlineAdminDetailProps) {
   const [load, setLoad] = useState<Load>('loading')
   const [detail, setDetail] = useState<AdminDetail | null>(null)
   const [shotFailed, setShotFailed] = useState(false)
@@ -176,6 +178,8 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onGone
           setDetail((d) => (d ? { ...d, ...latest } : d))
           setNotice('Changed elsewhere. Showing the latest.')
         }
+        // The list still shows the old copy: let the shell move the row and fix counts
+        onRefreshed?.(latest, previous)
       } else if (res.ok) {
         const updated = (await res.json()) as AdminItem
         // The server changed regardless of what is on screen now: always report it
