@@ -120,7 +120,7 @@ async function requireRemote() {
   try {
     host = new URL(remote.url).host
   } catch {
-    throw new Error(`REDLINE_REMOTE_URL is not a URL: ${JSON.stringify(remote.url)}`)
+    throw new Error('REDLINE_REMOTE_URL is not a valid URL')
   }
   console.log(`Supabase: ${host}`)
   return remote
@@ -148,7 +148,7 @@ async function mode() {
   try {
     console.log(`remote ${new URL(remote.url).host}`)
   } catch {
-    throw new Error(`REDLINE_REMOTE_URL is not a URL: ${JSON.stringify(remote.url)}`)
+    throw new Error('REDLINE_REMOTE_URL is not a valid URL')
   }
 }
 

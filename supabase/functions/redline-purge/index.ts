@@ -27,6 +27,21 @@ function sameSecret(a: string, b: string): boolean {
   return diff === 0
 }
 
+// Upstream error bodies can quote row data, so neither the response nor the log carries
+// them: status and PostgREST code only.
+async function upstream(what: string, res: Response): Promise<Response> {
+  let code = ''
+  try {
+    const parsed = JSON.parse(await res.text())
+    if (parsed && typeof parsed.code === 'string') code = ` ${parsed.code}`
+  } catch {
+    // not JSON
+  }
+  const msg = `${what} failed: ${res.status}${code}`
+  console.error(`[redline-purge] ${msg}`)
+  return new Response(msg, { status: 502 })
+}
+
 Deno.serve(async (req) => {
   const expected = Deno.env.get('REDLINE_PURGE_SECRET')
   const provided = req.headers.get('x-redline-purge-secret') ?? ''
@@ -40,13 +55,14 @@ Deno.serve(async (req) => {
 
   let items = 0
   let attachments = 0
+  let lastIds = ''
   // Loop in batches until nothing expired is left
   for (;;) {
     const now = encodeURIComponent(new Date().toISOString())
     const res = await fetch(`${url}/rest/v1/items?select=id,screenshot_path&expires_at=lte.${now}&limit=${BATCH}`, {
       headers: { ...auth, 'Accept-Profile': 'feedback' },
     })
-    if (!res.ok) return new Response(`Read failed: ${res.status} ${await res.text()}`, { status: 502 })
+    if (!res.ok) return upstream('Read', res)
     const expired: { id: string; screenshot_path: string | null }[] = await res.json()
     if (!expired.length) break
 
@@ -58,19 +74,23 @@ Deno.serve(async (req) => {
         headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({ prefixes: paths }),
       })
-      if (!del.ok) return new Response(`Storage delete failed: ${del.status} ${await del.text()}`, { status: 502 })
+      if (!del.ok) return upstream('Storage delete', del)
     }
 
     const ids = expired.map((r) => r.id).join(',')
+    // The same batch twice means the delete is not taking effect: stop rather than spin
+    if (ids === lastIds) return new Response('Row delete had no effect', { status: 502 })
+    lastIds = ids
     const rows = await fetch(`${url}/rest/v1/items?id=in.(${ids})`, {
       method: 'DELETE',
       headers: { ...auth, 'Content-Profile': 'feedback' },
     })
-    if (!rows.ok) return new Response(`Row delete failed: ${rows.status} ${await rows.text()}`, { status: 502 })
+    if (!rows.ok) return upstream('Row delete', rows)
 
     items += expired.length
     attachments += paths.length
-    if (expired.length < BATCH) break
+    // No early exit on a short batch: PostgREST's max_rows may be below BATCH, and
+    // the rows just read are deleted, so the next read is only empty when done.
   }
 
   return Response.json({ items, attachments })

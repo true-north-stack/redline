@@ -495,3 +495,52 @@ test('sync cannot delete', async () => {
   expect((await sync({ action: 'delete', id: r.id })).status).toBe(400)
   expect(await readRow(r.id)).toBeTruthy()
 })
+
+// ---- Final review fixes ----
+
+/** Insert n rows in one request; the test stack caps PostgREST responses at 100 rows. */
+async function bulkInsert(n: number, over: Partial<RedlineItem> = {}): Promise<RedlineItem[]> {
+  const rows = Array.from({ length: n }, () => item(over))
+  const res = await fetch(`${URL_}/rest/v1/items`, {
+    method: 'POST',
+    headers: { ...restHeaders(SECRET), 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    body: JSON.stringify(rows),
+  })
+  expect(res.ok).toBe(true)
+  return rows
+}
+
+test('sync list pages past the PostgREST row cap and returns every item', async () => {
+  const made = await bulkInsert(250)
+  const res = await sync({ action: 'list' })
+  expect(res.status).toBe(200)
+  const { items } = await res.json()
+  const ids = new Set(items.map((r: RedlineItem) => r.id))
+  expect(items.length).toBe(ids.size)
+  for (const r of made) expect(ids.has(r.id), r.id).toBe(true)
+  const times = items.map((r: RedlineItem) => r.created_at)
+  expect(times).toEqual([...times].sort())
+})
+
+test('adapter list pages past the PostgREST row cap', async () => {
+  const made = await bulkInsert(150)
+  const ids = new Set((await store().list()).map((r) => r.id))
+  for (const r of made) expect(ids.has(r.id), r.id).toBe(true)
+})
+
+test('sync list signs screenshots in a batch; a missing object is null, not a failed list', async () => {
+  const kept = await saveWithScreenshot(item())
+  const lost = await saveWithScreenshot(item())
+  const del = await fetch(`${URL_}/storage/v1/object/redline-screenshots`, {
+    method: 'DELETE',
+    headers: { apikey: SECRET, Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefixes: [lost.screenshot_path] }),
+  })
+  expect(del.ok).toBe(true)
+  const res = await sync({ action: 'list' })
+  expect(res.status).toBe(200)
+  const { items } = await res.json()
+  expect(items.find((r: RedlineItem) => r.id === lost.id).screenshot_url).toBeNull()
+  const url = items.find((r: RedlineItem) => r.id === kept.id).screenshot_url
+  expect((await fetch(url)).status).toBe(200)
+})

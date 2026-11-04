@@ -16,6 +16,7 @@ const BUCKET = Deno.env.get('REDLINE_BUCKET') ?? 'redline-screenshots'
 const STATUSES = ['open', 'fixed', 'dismissed', 'deferred']
 const SIGN_TTL_SECONDS = 300
 const SYNC_ACTOR = 'redline-cli'
+const PAGE = 1000
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function secretKey(): string | undefined {
@@ -39,6 +40,21 @@ function sameSecret(a: string, b: string): boolean {
 
 const bad = (msg: string) => new Response(msg, { status: 400 })
 
+// Upstream error bodies can quote row data (PostgREST "Failing row contains (...)"), so
+// neither the response nor the log carries them: status and PostgREST code only.
+async function upstream(what: string, res: Response): Promise<Response> {
+  let code = ''
+  try {
+    const parsed = JSON.parse(await res.text())
+    if (parsed && typeof parsed.code === 'string') code = ` ${parsed.code}`
+  } catch {
+    // not JSON
+  }
+  const msg = `${what} failed: ${res.status}${code}`
+  console.error(`[redline-sync] ${msg}`)
+  return new Response(msg, { status: 502 })
+}
+
 Deno.serve(async (req) => {
   const expected = Deno.env.get('REDLINE_SYNC_SECRET')
   if (!expected) return new Response('REDLINE_SYNC_SECRET is not set', { status: 500 })
@@ -49,7 +65,7 @@ Deno.serve(async (req) => {
   const url = Deno.env.get('SUPABASE_URL')
   const key = secretKey()
   if (!url || !key) return new Response('Missing SUPABASE_URL or secret key', { status: 500 })
-  const publicUrl = Deno.env.get('REDLINE_PUBLIC_URL') ?? url
+  const publicUrl = Deno.env.get('REDLINE_PUBLIC_URL') || url
   const auth = { apikey: key, Authorization: `Bearer ${key}` }
 
   let body: Record<string, unknown>
@@ -61,29 +77,52 @@ Deno.serve(async (req) => {
     return bad('Body must be JSON')
   }
 
-  // Signed URL for a private screenshot; null when the object is gone
-  async function sign(path: string): Promise<string | null> {
-    const res = await fetch(`${url}/storage/v1/object/sign/${BUCKET}/${path}`, {
-      method: 'POST',
-      headers: { ...auth, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ expiresIn: SIGN_TTL_SECONDS }),
-    })
-    if (res.status === 400 || res.status === 404) return null
-    if (!res.ok) throw new Error(`Sign failed: ${res.status} ${await res.text()}`)
-    const { signedURL } = await res.json()
-    return `${publicUrl}/storage/v1${signedURL}`
+  // Signed URLs for private screenshots, one Storage request per page of rows. A path
+  // that is gone, or a batch that fails, gets null: the CLI saves the item without its
+  // screenshot and retries the download on the next pull.
+  async function signAll(paths: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>()
+    if (!paths.length) return out
+    try {
+      const res = await fetch(`${url}/storage/v1/object/sign/${BUCKET}`, {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresIn: SIGN_TTL_SECONDS, paths }),
+      })
+      if (!res.ok) {
+        console.error(`[redline-sync] sign failed: ${res.status}`)
+        return out
+      }
+      const signed: { path: string | null; signedURL: string | null; error: string | null }[] = await res.json()
+      for (const s of signed) if (s.path && s.signedURL) out.set(s.path, `${publicUrl}/storage/v1${s.signedURL}`)
+    } catch {
+      console.error('[redline-sync] sign failed')
+    }
+    return out
   }
 
   try {
     if (body.action === 'list') {
-      const res = await fetch(`${url}/rest/v1/items?select=*&order=created_at.asc`, {
-        headers: { ...auth, 'Accept-Profile': 'feedback' },
-      })
-      if (!res.ok) return new Response(`Read failed: ${res.status} ${await res.text()}`, { status: 502 })
-      const rows: { screenshot_path: string | null }[] = await res.json()
-      const items = await Promise.all(
-        rows.map(async (r) => ({ ...r, screenshot_url: r.screenshot_path ? await sign(r.screenshot_path) : null })),
-      )
+      // Keyset pages on (created_at, id). PostgREST caps every response at its max_rows,
+      // which may be below PAGE, so only an empty page ends the walk: a short page
+      // proves nothing.
+      const items: Record<string, unknown>[] = []
+      let after: { created_at: string; id: string } | null = null
+      for (;;) {
+        const cursor = after
+          ? `&or=(created_at.gt.${encodeURIComponent(after.created_at)},and(created_at.eq.${encodeURIComponent(after.created_at)},id.gt.${after.id}))`
+          : ''
+        const res = await fetch(`${url}/rest/v1/items?select=*&order=created_at.asc,id.asc&limit=${PAGE}${cursor}`, {
+          headers: { ...auth, 'Accept-Profile': 'feedback' },
+        })
+        if (!res.ok) return upstream('Read', res)
+        const rows: { id: string; created_at: string; screenshot_path: string | null }[] = await res.json()
+        if (!rows.length) break
+        const urls = await signAll(rows.map((r) => r.screenshot_path).filter((p): p is string => !!p))
+        for (const r of rows) items.push({ ...r, screenshot_url: r.screenshot_path ? urls.get(r.screenshot_path) ?? null : null })
+        const last = rows[rows.length - 1]
+        after = { created_at: last.created_at, id: last.id }
+      }
       return Response.json({ items })
     }
 
@@ -104,7 +143,7 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({ status, status_updated_by: SYNC_ACTOR }),
       })
-      if (!res.ok) return new Response(`Update failed: ${res.status} ${await res.text()}`, { status: 502 })
+      if (!res.ok) return upstream('Update', res)
       const rows = await res.json()
       if (rows[0]) return Response.json({ item: rows[0] })
 
@@ -112,12 +151,12 @@ Deno.serve(async (req) => {
       const cur = await fetch(`${url}/rest/v1/items?select=*&id=eq.${id}&limit=1`, {
         headers: { ...auth, 'Accept-Profile': 'feedback' },
       })
-      if (!cur.ok) return new Response(`Read failed: ${cur.status} ${await cur.text()}`, { status: 502 })
+      if (!cur.ok) return upstream('Read', cur)
       const current = (await cur.json())[0]
       return current ? Response.json({ conflict: current }, { status: 409 }) : Response.json({ missing: true }, { status: 404 })
     }
-  } catch (e) {
-    return new Response(e instanceof Error ? e.message : 'Upstream error', { status: 502 })
+  } catch {
+    return new Response('Upstream error', { status: 502 })
   }
 
   return bad('Unknown action')

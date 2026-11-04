@@ -50,6 +50,8 @@ export const isUuid = (s: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 
 const DEFAULT_PAGE = 50
 const MAX_PAGE = 100
+/** Rows per request when reading everything. PostgREST may cap responses lower (max_rows). */
+const SCAN_PAGE = 1000
 
 export interface RedlineStore {
   readonly kind: 'local' | 'supabase'
@@ -163,6 +165,19 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
 
   const auth = { apikey: key, Authorization: `Bearer ${key}` }
 
+  // Error bodies can quote row data (PostgREST "Failing row contains (...)" carries
+  // feedback text), and callers log these messages. Keep the status and PostgREST code only.
+  async function failure(what: string, res: Response): Promise<Error> {
+    let code = ''
+    try {
+      const parsed = JSON.parse(await res.text())
+      if (parsed && typeof parsed.code === 'string' && /^[\w.-]{1,32}$/.test(parsed.code)) code = ` (${parsed.code})`
+    } catch {
+      // not JSON
+    }
+    return new Error(`[redline] Supabase ${what} failed: ${res.status}${code}`)
+  }
+
   async function rest(path: string, init: RequestInit & { profile: 'read' | 'write' }) {
     const { profile, headers, ...rest } = init
     const res = await fetch(`${url}/rest/v1/${path}`, {
@@ -174,7 +189,7 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
         ...headers,
       },
     })
-    if (!res.ok) throw new Error(`[redline] Supabase ${init.method ?? 'GET'} ${path} failed: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(`${init.method ?? 'GET'} ${path.split('?')[0]}`, res)
     return res
   }
 
@@ -185,7 +200,7 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
       headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ prefixes: paths }),
     })
-    if (!res.ok) throw new Error(`[redline] Supabase storage delete failed: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure('storage delete', res)
   }
 
   return {
@@ -198,7 +213,7 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
         headers: { ...auth, 'Content-Type': file.type || 'image/png', 'x-upsert': 'false' },
         body: file,
       })
-      if (!res.ok) throw new Error(`[redline] Supabase upload failed: ${res.status} ${await res.text()}`)
+      if (!res.ok) throw await failure('upload', res)
       return path
     },
 
@@ -213,23 +228,46 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
     },
 
     async list(filter) {
+      // Keyset pages on (created_at, id). PostgREST caps each response at max_rows, which
+      // may be below SCAN_PAGE, so only an empty page ends the walk.
       const status = filter?.status ? `&status=eq.${filter.status}` : ''
-      const res = await rest(`items?select=*&order=created_at.asc${status}`, { profile: 'read' })
-      return res.json()
+      const all: RedlineItem[] = []
+      let after: RedlineItem | undefined
+      for (;;) {
+        const cursor = after
+          ? `&or=(created_at.gt.${encodeURIComponent(after.created_at)},and(created_at.eq.${encodeURIComponent(after.created_at)},id.gt.${after.id}))`
+          : ''
+        const res = await rest(`items?select=*&order=created_at.asc,id.asc&limit=${SCAN_PAGE}${status}${cursor}`, { profile: 'read' })
+        const rows: RedlineItem[] = await res.json()
+        if (!rows.length) return all
+        all.push(...rows)
+        after = rows[rows.length - 1]
+      }
     },
 
     async purge(now = new Date()) {
-      const res = await rest(
-        `items?select=id,screenshot_path&expires_at=lte.${encodeURIComponent(now.toISOString())}&limit=1000`,
-        { profile: 'read' },
-      )
-      const expired: Pick<RedlineItem, 'id' | 'screenshot_path'>[] = await res.json()
-      if (!expired.length) return { items: 0, attachments: 0 }
-      const paths = expired.map((r) => r.screenshot_path).filter((p): p is string => !!p)
-      // Objects first: if this fails the rows stay, and the next run retries
-      await removeObjects(paths)
-      await rest(`items?id=in.(${expired.map((r) => r.id).join(',')})`, { method: 'DELETE', profile: 'write' })
-      return { items: expired.length, attachments: paths.length }
+      let items = 0
+      let attachments = 0
+      let lastIds = ''
+      // Batches until none are left; rows read are deleted, so an empty read means done
+      for (;;) {
+        const res = await rest(
+          `items?select=id,screenshot_path&expires_at=lte.${encodeURIComponent(now.toISOString())}&limit=${SCAN_PAGE}`,
+          { profile: 'read' },
+        )
+        const expired: Pick<RedlineItem, 'id' | 'screenshot_path'>[] = await res.json()
+        if (!expired.length) break
+        const ids = expired.map((r) => r.id).join(',')
+        if (ids === lastIds) throw new Error('[redline] Supabase purge: row delete had no effect')
+        lastIds = ids
+        const paths = expired.map((r) => r.screenshot_path).filter((p): p is string => !!p)
+        // Objects first: if this fails the rows stay, and the next run retries
+        await removeObjects(paths)
+        await rest(`items?id=in.(${ids})`, { method: 'DELETE', profile: 'write' })
+        items += expired.length
+        attachments += paths.length
+      }
+      return { items, attachments }
     },
 
     async query(q) {
@@ -288,7 +326,7 @@ export function supabaseStore(config: RedlineConfig): RedlineStore {
         body: JSON.stringify({ expiresIn: ttlSeconds }),
       })
       if (res.status === 400 || res.status === 404) return null
-      if (!res.ok) throw new Error(`[redline] Supabase sign failed: ${res.status} ${await res.text()}`)
+      if (!res.ok) throw await failure('sign', res)
       const { signedURL } = await res.json()
       return `${url}/storage/v1${signedURL}`
     },

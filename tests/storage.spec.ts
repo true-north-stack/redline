@@ -6,7 +6,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
-import { localStore, type RedlineItem } from '../component/redline-storage'
+import { localStore, supabaseStore, type RedlineItem } from '../component/redline-storage'
 import { sanitizePageUrl } from '../component/redline-config'
 
 const CLI = fileURLToPath(new URL('../scripts/redline.mjs', import.meta.url))
@@ -145,4 +145,62 @@ test('local store inbox methods reject', async () => {
   await expect(s.get(crypto.randomUUID())).rejects.toThrow(/not supported/)
   await expect(s.setStatus(crypto.randomUUID(), 'fixed', 'a', 'x')).rejects.toThrow(/not supported/)
   await expect(s.screenshotUrl('a.png')).rejects.toThrow(/not supported/)
+})
+
+// ---- Final review fixes ----
+
+test('Supabase errors keep method, path, status and code but never the response body', async () => {
+  const SENTINEL = 'Failing row contains (Jane Q. Patient)'
+  const real = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ code: '23514', message: 'new row violates check', details: SENTINEL }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+  const plain = (async () => new Response(`<html>${SENTINEL}</html>`, { status: 500 })) as typeof fetch
+  try {
+    const s = supabaseStore({ storage: 'supabase', supabase: { url: 'http://sb.test', secretKey: 'k' } })
+    const failures: Error[] = []
+    const attempt = async (p: Promise<unknown>) => {
+      try {
+        await p
+        throw new Error('expected a failure')
+      } catch (e) {
+        failures.push(e as Error)
+      }
+    }
+    await attempt(s.saveItem(item()))
+    await attempt(s.list())
+    await attempt(s.saveAttachment(crypto.randomUUID(), new Blob(['x'], { type: 'image/png' })))
+    await attempt(s.summary())
+    globalThis.fetch = plain
+    await attempt(s.screenshotUrl('a.png'))
+    await attempt(s.get(crypto.randomUUID()))
+    expect(failures).toHaveLength(6)
+    for (const e of failures) {
+      expect(e.message).not.toContain(SENTINEL)
+      expect(e.message).not.toContain('Jane')
+      expect(e.message).toMatch(/\b(400|500)\b/)
+    }
+    expect(failures[0].message).toContain('POST items')
+    expect(failures[0].message).toContain('23514')
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test('an invalid REDLINE_REMOTE_URL is reported without echoing its value', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'redline-'))
+  const env = { ...process.env, REDLINE_ROOT: root, REDLINE_REMOTE_URL: 'sb_secret_pasted-by-mistake', REDLINE_SYNC_SECRET: 's' }
+  for (const cmd of ['mode', 'pull']) {
+    let failure: { status?: number; stderr?: string; stdout?: string } | null = null
+    try {
+      execFileSync('node', [CLI, cmd], { env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) {
+      failure = e as { status?: number; stderr?: string }
+    }
+    expect(failure?.status).toBe(1)
+    expect(failure?.stderr?.trim()).toBe('REDLINE_REMOTE_URL is not a valid URL')
+    expect(`${failure?.stderr}${failure?.stdout}`).not.toContain('pasted-by-mistake')
+  }
 })
