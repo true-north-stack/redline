@@ -7,7 +7,8 @@ import { readFile, writeFile, mkdir, unlink } from 'fs/promises'
 import { join } from 'path'
 import { DEFAULT_BUCKET, type RedlineConfig } from './redline-config'
 
-export type RedlineStatus = 'open' | 'fixed' | 'dismissed' | 'deferred'
+/** 'review' is To Review (tester feedback the owner hasn't triaged); 'open' is To Fix. */
+export type RedlineStatus = 'review' | 'open' | 'fixed' | 'dismissed' | 'deferred'
 
 export interface RedlineItem {
   id: string
@@ -25,6 +26,8 @@ export interface RedlineItem {
   expires_at: string
   status_updated_at?: string
   status_updated_by?: string | null
+  /** Supabase mode: when the owner first moved it to To Fix. Only approved rows sync to the CLI. */
+  approved_at?: string | null
 }
 
 export interface InboxQuery {
@@ -45,7 +48,7 @@ export interface InboxSummary {
 }
 export type SetStatusResult = { item: RedlineItem } | { conflict: RedlineItem } | { missing: true }
 
-export const STATUSES: readonly RedlineStatus[] = ['open', 'fixed', 'dismissed', 'deferred']
+export const STATUSES: readonly RedlineStatus[] = ['review', 'open', 'fixed', 'dismissed', 'deferred']
 export const isUuid = (s: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 
 const DEFAULT_PAGE = 50

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ExternalLink, X, ImageOff, Loader2 } from 'lucide-react'
+import { STATUS_LABELS } from './redline-admin-types'
 import type { AdminDetail, AdminItem } from './redline-admin-types'
 import type { RedlineStatus } from './redline-storage'
 
@@ -245,7 +246,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
           data-testid="status"
           className="rounded-full border border-border bg-card px-2.5 py-1 font-medium capitalize text-foreground"
         >
-          {detail.status}
+          {STATUS_LABELS[detail.status]}
         </span>
         <span>{deletesIn(detail.expires_at)}</span>
       </div>
@@ -313,7 +314,12 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
       </dl>
 
       <div className="mt-auto flex flex-wrap gap-2 pt-2">
-        {detail.status !== 'fixed' && (
+        {detail.status === 'review' && (
+          <button type="button" disabled={busy} onClick={() => changeStatus('open')} className={`${btn} bg-primary text-primary-foreground hover:bg-primary/90`}>
+            Move to To Fix
+          </button>
+        )}
+        {detail.status !== 'fixed' && detail.status !== 'review' && (
           <button type="button" disabled={busy} onClick={() => changeStatus('fixed')} className={`${btn} bg-primary text-primary-foreground hover:bg-primary/90`}>
             Mark fixed
           </button>
@@ -324,8 +330,8 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
         {detail.status !== 'dismissed' && (
           <button type="button" disabled={busy} onClick={() => changeStatus('dismissed')} className={btn}>Dismiss</button>
         )}
-        {detail.status !== 'open' && (
-          <button type="button" disabled={busy} onClick={() => changeStatus('open')} className={btn}>Reopen</button>
+        {detail.status !== 'open' && detail.status !== 'review' && (
+          <button type="button" disabled={busy} onClick={() => changeStatus('open')} className={btn}>Move to To Fix</button>
         )}
       </div>
 

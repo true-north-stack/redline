@@ -38,7 +38,7 @@ const post = (body: unknown) =>
 
 const payload = { page_url: '/bookings?q=secret', element_selector: '#save', feedback: SECRET }
 
-test('POST saves and returns 201; GET lists open items', async () => {
+test('local mode: POST saves and returns 201 with status open (To Fix); GET lists items', async () => {
   const h = await localHandlers()
   const res = await h.POST(post(payload))
   expect(res.status).toBe(201)
@@ -71,6 +71,9 @@ test('supabase mode: POST without a tester is 401, GET is 404', async () => {
   const res = await ok.POST(post(payload))
   expect(res.status).toBe(201)
   expect((await res.json()).tester_id).toBe('user-1')
+  // Tester feedback waits in To Review until the owner triages it
+  expect(store.items).toHaveLength(1)
+  expect(store.items[0].status).toBe('review')
 })
 
 test('onRedlineCreated gets only the summary, deferred', async () => {

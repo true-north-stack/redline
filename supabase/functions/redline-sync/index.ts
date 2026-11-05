@@ -4,6 +4,11 @@
 // delete, no arbitrary query and no access beyond feedback.items and the
 // screenshot bucket.
 //
+// The triage gate lives here: a row is listed, changed or echoed back in a
+// conflict only if the owner has approved it (moved it to To Fix in the inbox,
+// which stamps approved_at). Feedback still in To Review, or deferred or
+// dismissed straight from it, never reaches the dev machine or the coding agent.
+//
 // Deploy with JWT verification off (auth is the shared secret below):
 //   supabase functions deploy redline-sync --no-verify-jwt
 //   supabase secrets set REDLINE_SYNC_SECRET=<long random value>
@@ -13,7 +18,9 @@
 // SUPABASE_URL is a container-internal host the CLI cannot resolve.
 
 const BUCKET = Deno.env.get('REDLINE_BUCKET') ?? 'redline-screenshots'
+// 'review' is deliberately absent: the CLI can't send anything back to To Review
 const STATUSES = ['open', 'fixed', 'dismissed', 'deferred']
+const APPROVED = 'approved_at=not.is.null'
 const SIGN_TTL_SECONDS = 300
 const SYNC_ACTOR = 'redline-cli'
 const PAGE = 1000
@@ -112,7 +119,7 @@ Deno.serve(async (req) => {
         const cursor = after
           ? `&or=(created_at.gt.${encodeURIComponent(after.created_at)},and(created_at.eq.${encodeURIComponent(after.created_at)},id.gt.${after.id}))`
           : ''
-        const res = await fetch(`${url}/rest/v1/items?select=*&order=created_at.asc,id.asc&limit=${PAGE}${cursor}`, {
+        const res = await fetch(`${url}/rest/v1/items?select=*&${APPROVED}&order=created_at.asc,id.asc&limit=${PAGE}${cursor}`, {
           headers: { ...auth, 'Accept-Profile': 'feedback' },
         })
         if (!res.ok) return upstream('Read', res)
@@ -133,7 +140,7 @@ Deno.serve(async (req) => {
       if (typeof expectedAt !== 'string' || !expectedAt) return bad('expected_status_updated_at is required')
 
       // Conditional on the timestamp the caller last saw; the DB trigger restamps it
-      const res = await fetch(`${url}/rest/v1/items?id=eq.${id}&status_updated_at=eq.${encodeURIComponent(expectedAt)}`, {
+      const res = await fetch(`${url}/rest/v1/items?id=eq.${id}&${APPROVED}&status_updated_at=eq.${encodeURIComponent(expectedAt)}`, {
         method: 'PATCH',
         headers: {
           ...auth,
@@ -147,8 +154,9 @@ Deno.serve(async (req) => {
       const rows = await res.json()
       if (rows[0]) return Response.json({ item: rows[0] })
 
-      // Zero rows: tell a stale timestamp from a missing row
-      const cur = await fetch(`${url}/rest/v1/items?select=*&id=eq.${id}&limit=1`, {
+      // Zero rows: tell a stale timestamp from a missing row. An item the owner
+      // hasn't approved counts as missing, so its text never leaves through a conflict either.
+      const cur = await fetch(`${url}/rest/v1/items?select=*&id=eq.${id}&${APPROVED}&limit=1`, {
         headers: { ...auth, 'Accept-Profile': 'feedback' },
       })
       if (!cur.ok) return upstream('Read', cur)

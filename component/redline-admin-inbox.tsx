@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera } from 'lucide-react'
 import { RedlineAdminDetail } from './redline-admin-detail'
+import { STATUS_LABELS } from './redline-admin-types'
 import type { AdminItem, AdminListResponse } from './redline-admin-types'
 import type { RedlineStatus } from './redline-storage'
 
@@ -15,22 +16,23 @@ interface Query { status: Tab; tester: string; version: string; id: string | nul
 interface Undo { item: AdminItem; previous: RedlineStatus; error?: string }
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'open', label: 'Open' },
-  { key: 'deferred', label: 'Deferred' },
-  { key: 'fixed', label: 'Fixed' },
-  { key: 'dismissed', label: 'Dismissed' },
+  { key: 'review', label: STATUS_LABELS.review },
+  { key: 'open', label: STATUS_LABELS.open },
+  { key: 'deferred', label: STATUS_LABELS.deferred },
+  { key: 'fixed', label: STATUS_LABELS.fixed },
+  { key: 'dismissed', label: STATUS_LABELS.dismissed },
   { key: 'all', label: 'All' },
 ]
 const UNDO_MS = 5000
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const ZERO: Record<RedlineStatus, number> = { open: 0, fixed: 0, dismissed: 0, deferred: 0 }
+const ZERO: Record<RedlineStatus, number> = { review: 0, open: 0, fixed: 0, dismissed: 0, deferred: 0 }
 const control =
   'min-h-[44px] rounded-md border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50'
 
 function readQuery(): Query {
   const p = new URLSearchParams(window.location.search)
   const s = p.get('status')
-  const status: Tab = s === 'all' || TABS.some((t) => t.key === s) ? (s as Tab) : 'open'
+  const status: Tab = s === 'all' || TABS.some((t) => t.key === s) ? (s as Tab) : 'review'
   return { status, tester: p.get('tester') ?? '', version: p.get('version') ?? '', id: UUID.test(p.get('id') ?? '') ? p.get('id') : null }
 }
 
@@ -66,7 +68,8 @@ const newerFirst = (a: AdminItem, b: AdminItem) =>
 
 function emptyText(tab: Tab): string {
   if (tab === 'all') return 'No feedback yet.'
-  if (tab === 'open') return 'No open feedback. New submissions from testers show up here.'
+  if (tab === 'review') return 'Nothing to review. New feedback from testers shows up here.'
+  if (tab === 'open') return 'Nothing to fix. Feedback you move to To Fix shows up here, and /redline fix works through it.'
   return `No ${tab} feedback.`
 }
 
@@ -96,14 +99,14 @@ function Row({ item, selected, onOpen }: { item: AdminItem; selected: boolean; o
       >
         <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0 rounded-full border border-border bg-card px-2 py-0.5 font-medium capitalize text-foreground">
-            {item.status}
+            {STATUS_LABELS[item.status]}
           </span>
           {item.ux_review_requested && (
             <span className="shrink-0 rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground">UX review</span>
           )}
           {item.screenshot_path && <Camera aria-label="Has screenshot" className="h-3.5 w-3.5 shrink-0" />}
         </span>
-        <span className="line-clamp-2 min-w-0 whitespace-pre-line break-all text-sm text-foreground">{item.feedback}</span>
+        <span className="line-clamp-2 min-w-0 whitespace-pre-line [overflow-wrap:anywhere] text-sm text-foreground">{item.feedback}</span>
         <span className="block min-w-0 truncate font-mono text-xs text-muted-foreground">{item.page_url}</span>
         <span className="block min-w-0 truncate text-xs text-muted-foreground">{meta.join(' · ')}</span>
       </button>
@@ -112,7 +115,7 @@ function Row({ item, selected, onOpen }: { item: AdminItem; selected: boolean; o
 }
 
 export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?: string }) {
-  const [q, setQ] = useState<Query>({ status: 'open', tester: '', version: '', id: null })
+  const [q, setQ] = useState<Query>({ status: 'review', tester: '', version: '', id: null })
   const [ready, setReady] = useState(false)
   const [items, setItems] = useState<AdminItem[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -391,9 +394,9 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
       >
         <h2 ref={headingRef} tabIndex={-1} className="sr-only">Tester feedback</h2>
         <div className="flex flex-col gap-3 border-b border-border p-3">
-          <div role="tablist" aria-label="Status" className="flex flex-wrap gap-1">
+          <div role="tablist" aria-label="Status" className="grid grid-cols-3 gap-1">
             {TABS.map((t) => {
-              const count = t.key === 'all' ? counts.open + counts.deferred + counts.fixed + counts.dismissed : counts[t.key]
+              const count = t.key === 'all' ? counts.review + counts.open + counts.deferred + counts.fixed + counts.dismissed : counts[t.key]
               const active = q.status === t.key
               return (
                 <button
@@ -402,7 +405,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
                   role="tab"
                   aria-selected={active}
                   onClick={() => changeFilter({ status: t.key })}
-                  className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-md border px-2.5 text-sm font-medium transition-colors ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-foreground hover:bg-muted'}`}
+                  className={`inline-flex min-h-[44px] min-w-0 items-center justify-center gap-1 rounded-md border px-1.5 text-sm font-medium whitespace-nowrap transition-colors ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background text-foreground hover:bg-muted'}`}
                 >
                   {t.label}
                   <span className={`text-xs ${active ? 'text-primary-foreground' : 'text-muted-foreground'}`}>{count}</span>
@@ -503,7 +506,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
             <span>{undo.error}</span>
           ) : (
             <>
-              <span>{undo.item.status === 'open' ? 'Reopened · ' : `Marked ${undo.item.status} · `}</span>
+              <span>{undo.item.status === 'open' ? 'Moved to To Fix · ' : `Marked ${undo.item.status} · `}</span>
               <button
                 type="button"
                 onClick={doUndo}

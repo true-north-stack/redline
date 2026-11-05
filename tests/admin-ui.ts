@@ -45,7 +45,11 @@ export interface OpenAdminOpts {
   failList?: boolean
   /** Delay on every API response. */
   delayMs?: number
-  /** Query string for the page URL, e.g. '?status=fixed'. For the inbox view, `id` is added as ?id=. */
+  /**
+   * Query string for the page URL, e.g. '?status=fixed'. The inbox view defaults to '?status=open'
+   * (To Fix) because most specs exercise that tab; pass '' to get the real default (To Review).
+   * With the default, `id` is added as &id=.
+   */
   search?: string
   /** Extra delay on PATCH responses only. */
   patchDelayMs?: number
@@ -104,7 +108,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
         const all = [...store.values()].sort((a, b) =>
           a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : a.created_at < b.created_at ? 1 : -1)
         // Counts, testers and versions ignore the filters, like the real API
-        const counts = { open: 0, fixed: 0, dismissed: 0, deferred: 0 }
+        const counts = { review: 0, open: 0, fixed: 0, dismissed: 0, deferred: 0 }
         for (const i of all) counts[i.status]++
         const testers = new Map<string, string>()
         for (const i of all) if (i.tester_id) testers.set(i.tester_id, i.tester_label ?? i.tester_id)
@@ -152,7 +156,7 @@ export async function openAdmin(page: Page, opts: OpenAdminOpts) {
     }
     return route.fulfill({ status: 404, body: '' })
   })
-  const search = opts.search ?? (opts.view === 'inbox' && opts.id ? `?id=${opts.id}` : '')
+  const search = opts.search ?? (opts.view === 'inbox' ? `?status=open${opts.id ? `&id=${opts.id}` : ''}` : '')
   await page.goto(`${ORIGIN}/admin${search}`)
   return { calls, store }
 }

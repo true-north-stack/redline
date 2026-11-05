@@ -1,12 +1,12 @@
 ---
 name: redline:check
-description: Check open redlines (in-app dev feedback) and summarize what needs attention
+description: Check redlines waiting to be fixed (in-app dev feedback) and summarize what needs attention
 allowed-tools:
   - Read
   - Bash
 ---
 
-Query all open redlines from `redline/feedback.json` in the project root and present a summary.
+Query all redlines waiting to be fixed (status `open`, the admin inbox's To Fix) from `redline/feedback.json` in the project root and present a summary.
 
 ## Process
 
@@ -24,6 +24,6 @@ For each open redline, show:
 4. Feedback text
 5. When it was left
 
-End with a count: "X open redlines"
+End with a count: "X redlines to fix"
 
-If the file doesn't exist or is empty, report "0 open redlines".
+If the file doesn't exist or is empty, report "0 redlines to fix".

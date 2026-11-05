@@ -21,25 +21,37 @@ const detail = (page: Page) => page.getByTestId('detail-pane')
 const tab = (page: Page, name: string) => page.getByRole('tab', { name: new RegExp(`^${name}\\b`) })
 const rows = (page: Page) => list(page).getByRole('button', { name: /Feedback|xxxx/ })
 
-test('opens on Open with counts on every tab', async ({ page }) => {
+test('with no ?status= the inbox opens on To Review, with counts on every tab', async ({ page }) => {
   await openAdmin(page, {
     view: 'inbox',
-    items: [mk(1), mk(2), mk(3, { status: 'fixed' }), mk(4, { status: 'dismissed' }), mk(5, { status: 'deferred' }), mk(6, { status: 'deferred' })],
+    search: '',
+    items: [
+      mk(1, { status: 'review' }), mk(2, { status: 'review' }), mk(3, { status: 'review' }),
+      mk(4), mk(5),
+      mk(6, { status: 'fixed' }), mk(7, { status: 'dismissed' }), mk(8, { status: 'deferred' }), mk(9, { status: 'deferred' }),
+    ],
   })
-  await expect(tab(page, 'Open')).toHaveAttribute('aria-selected', 'true')
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*2/)
+  await expect(tab(page, 'To Review')).toHaveAttribute('aria-selected', 'true')
+  await expect(tab(page, 'To Review')).toHaveText(/To Review\s*3/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*2/)
   await expect(tab(page, 'Deferred')).toHaveText(/Deferred\s*2/)
   await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*1/)
   await expect(tab(page, 'Dismissed')).toHaveText(/Dismissed\s*1/)
-  await expect(tab(page, 'All')).toHaveText(/All\s*6/)
-  await expect(list(page).getByText('Feedback 1')).toBeVisible()
-  await expect(list(page).getByText('Feedback 3')).toHaveCount(0)
+  await expect(tab(page, 'All')).toHaveText(/All\s*9/)
+  await expect(rows(page)).toHaveCount(3)
+  await expect(list(page).getByText('Feedback 1', { exact: true })).toBeVisible()
+  await expect(list(page).getByText('Feedback 4', { exact: true })).toHaveCount(0)
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('To Review')
+  await tab(page, 'To Fix').click()
+  await expect(rows(page)).toHaveCount(2)
+  await expect(list(page).getByText('Feedback 4', { exact: true })).toBeVisible()
+  expect(page.url()).toContain('status=open')
   await tab(page, 'Fixed').click()
-  await expect(list(page).getByText('Feedback 3')).toBeVisible()
-  await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
+  await expect(list(page).getByText('Feedback 6', { exact: true })).toBeVisible()
+  await expect(list(page).getByText('Feedback 4', { exact: true })).toHaveCount(0)
   expect(page.url()).toContain('status=fixed')
   await tab(page, 'All').click()
-  await expect(rows(page)).toHaveCount(6)
+  await expect(rows(page)).toHaveCount(9)
   expect(page.url()).toContain('status=all')
 })
 
@@ -128,8 +140,12 @@ test('?id= opens that item directly (390), and browser Back returns to the list'
 })
 
 test('empty states follow the tab', async ({ page }) => {
-  await openAdmin(page, { view: 'inbox', items: [] })
-  await expect(page.getByText('No open feedback. New submissions from testers show up here.')).toBeVisible()
+  await openAdmin(page, { view: 'inbox', items: [], search: '' })
+  await expect(page.getByText('Nothing to review. New feedback from testers shows up here.')).toBeVisible()
+  await tab(page, 'To Fix').click()
+  await expect(page.getByText('Nothing to fix. Feedback you move to To Fix shows up here, and /redline fix works through it.')).toBeVisible()
+  await tab(page, 'Fixed').click()
+  await expect(page.getByText('No fixed feedback.')).toBeVisible()
   await tab(page, 'Deferred').click()
   await expect(page.getByText('No deferred feedback.')).toBeVisible()
   await tab(page, 'All').click()
@@ -163,7 +179,7 @@ async function markFixedFirst(page: Page, extra: Partial<OpenAdminOpts> = {}) {
   return r
 }
 
-test('Mark fixed moves the item out of Open, selects the next one and shows "Marked fixed · Undo"', async ({ page }) => {
+test('Mark fixed moves the item out of To Fix, selects the next one and shows "Marked fixed · Undo"', async ({ page }) => {
   await markFixedFirst(page)
   await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
   await expect(detail(page).getByText('Feedback 2')).toBeVisible()
@@ -191,13 +207,16 @@ test('Undo uses the timestamp from the first PATCH', async ({ page }) => {
   expect(first.body).toEqual({ status: 'fixed', expected_status_updated_at: 'ts-1' })
   expect(second.body).toEqual({ status: 'open', expected_status_updated_at: firstTs })
   await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toBeVisible()
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*3/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*3/)
   await expect(page.getByTestId('undo-bar')).toHaveCount(0)
   expect(store.get(mk(1).id)!.status).toBe('open')
 })
 
 test('Undo disappears after 5 seconds', async ({ page }) => {
+  // Paused, so only runFor moves time: a free-running clock lets real time leak in on a
+  // busy machine and the bar expires before the 4.9s check.
   await page.clock.install({ time: NOW })
+  await page.clock.pauseAt(new Date(NOW.getTime() + 1000))
   await markFixedFirst(page)
   await expect(page.getByTestId('undo-bar')).toBeVisible()
   await page.clock.runFor(4900)
@@ -208,7 +227,7 @@ test('Undo disappears after 5 seconds', async ({ page }) => {
 
 test('counts update after a status change', async ({ page }) => {
   await markFixedFirst(page)
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*2/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*2/)
   await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*2/)
   await expect(tab(page, 'All')).toHaveText(/All\s*4/)
 })
@@ -219,7 +238,7 @@ test('in All the row stays and updates in place', async ({ page }) => {
   await list(page).getByRole('button', { name: /Feedback 1/ }).click()
   await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
   await expect(page.getByTestId('undo-bar')).toBeVisible()
-  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('fixed')
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('Fixed')
   await expect(rows(page)).toHaveCount(2)
 })
 
@@ -228,7 +247,7 @@ test('a purged item disappears from the list', async ({ page }) => {
   await list(page).getByRole('button', { name: /Feedback 1/ }).click()
   await detail(page).getByRole('button', { name: 'Defer' }).click()
   await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*1/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*1/)
 })
 
 test('no horizontal scroll at 390 with extreme fields', async ({ page }) => {
@@ -273,17 +292,19 @@ test('every button and row is at least 44px tall at 390', async ({ page }) => {
 test('?id=../../evil never requests outside the admin API and shows the list', async ({ page }) => {
   const urls: string[] = []
   page.on('request', (r) => { if (r.url().startsWith('http://redline.test')) urls.push(r.url()) })
-  const { calls } = await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?id=../../evil' })
+  const { calls } = await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?status=open&id=../../evil' })
   await expect(list(page).getByText('Feedback 1')).toBeVisible()
   await page.waitForTimeout(200)
-  const api = 'http://redline.test/api/redline-admin'
-  for (const u of urls.filter((u) => !u.endsWith('/admin') && !u.includes('?id='))) {
-    expect(u.startsWith(api), u).toBe(true)
+  // Only the page itself (/admin) and the list endpoint (/api/redline-admin, no path segment) may be requested
+  expect(urls.length).toBeGreaterThan(0)
+  for (const u of urls) {
+    const { pathname } = new URL(u)
+    expect(['/admin', '/api/redline-admin'], u).toContain(pathname)
   }
   expect(calls.every((c) => /\/api\/redline-admin(\?.*)?$/.test(c.url))).toBe(true)
   expect(page.url()).not.toContain('evil')
   // A well-formed id in a path-shaped value is still encoded, never traversed
-  await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?id=00000000-0000-4000-8000-000000000001' })
+  await openAdmin(page, { view: 'inbox', items: [mk(1)], search: '?status=open&id=00000000-0000-4000-8000-000000000001' })
   await expect(detail(page).getByText('Feedback 1')).toBeVisible()
 })
 
@@ -296,7 +317,7 @@ test('Undo after switching tabs removes the row from the current tab and fixes c
   await expect(page.getByTestId('undo-bar')).toHaveCount(0)
   await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
   await expect(list(page).getByRole('button', { name: /Feedback 4/ })).toBeVisible()
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*3/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*3/)
   await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*1/)
 })
 
@@ -318,9 +339,9 @@ test('a Load more in flight during a status change cannot reset counts or resurr
   await page.getByRole('button', { name: 'Load more' }).click()
   await list(page).getByRole('button', { name: /Feedback 1\b/ }).first().click()
   await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*59/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*59/)
   await page.waitForTimeout(1100)
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*59/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*59/)
   await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*1/)
   await expect(list(page).getByText('Feedback 1', { exact: true })).toHaveCount(0)
 })
@@ -348,7 +369,7 @@ test('focus: after Mark fixed it is not on body; mobile open and Back move focus
   await expect.poll(inDetail).toBe(true)
 
   await page.setViewportSize({ width: 390, height: 800 })
-  await page.goto('http://redline.test/admin')
+  await page.goto('http://redline.test/admin?status=open')
   await expect(rows(page).first()).toBeVisible()
   await rows(page).first().click()
   await expect(list(page)).toBeHidden()
@@ -363,15 +384,15 @@ test('focus: after Mark fixed it is not on body; mobile open and Back move focus
 
 // ---- Final review fixes ----
 
-test('a 409 in the detail pane refreshes the list: the row leaves Open, counts update, no Undo bar', async ({ page }) => {
+test('a 409 in the detail pane refreshes the list: the row leaves To Fix, counts update, no Undo bar', async ({ page }) => {
   await openAdmin(page, { view: 'inbox', items: [mk(1), mk(2), mk(3, { status: 'fixed' })], conflictWith: { status: 'fixed' } })
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*2/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*2/)
   await list(page).getByRole('button', { name: /Feedback 1/ }).click()
   await expect(detail(page).getByText('Feedback 1')).toBeVisible()
   await detail(page).getByRole('button', { name: 'Dismiss' }).click()
   await expect(detail(page).getByText('Changed elsewhere. Showing the latest.')).toBeVisible()
   await expect(list(page).getByText('Feedback 1')).toHaveCount(0)
-  await expect(tab(page, 'Open')).toHaveText(/Open\s*1/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*1/)
   await expect(tab(page, 'Fixed')).toHaveText(/Fixed\s*2/)
   await expect(tab(page, 'All')).toHaveText(/All\s*3/)
   await expect(page.getByTestId('undo-bar')).toHaveCount(0)
@@ -385,16 +406,16 @@ test('a 409 in All updates the row badge in place', async ({ page }) => {
   await list(page).getByRole('button', { name: /Feedback 1/ }).click()
   await detail(page).getByRole('button', { name: 'Mark fixed' }).click()
   await expect(detail(page).getByText('Changed elsewhere. Showing the latest.')).toBeVisible()
-  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('deferred')
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toContainText('Deferred')
   await expect(tab(page, 'Deferred')).toHaveText(/Deferred\s*1/)
   await expect(page.getByTestId('undo-bar')).toHaveCount(0)
 })
 
-test('after Reopen the Undo bar reads "Reopened · Undo"', async ({ page }) => {
+test('after Move to To Fix the Undo bar reads "Moved to To Fix · Undo"', async ({ page }) => {
   await openAdmin(page, { view: 'inbox', items: [mk(1, { status: 'fixed' })], search: '?status=fixed' })
   await list(page).getByRole('button', { name: /Feedback 1/ }).click()
-  await detail(page).getByRole('button', { name: 'Reopen' }).click()
-  await expect(page.getByTestId('undo-bar')).toHaveText('Reopened · Undo')
+  await detail(page).getByRole('button', { name: 'Move to To Fix' }).click()
+  await expect(page.getByTestId('undo-bar')).toHaveText('Moved to To Fix · Undo')
 })
 
 test('below 1024px the list leaves room under Load more for the fixed Undo bar', async ({ page }) => {
@@ -402,11 +423,48 @@ test('below 1024px the list leaves room under Load more for the fixed Undo bar',
   const items = Array.from({ length: 60 }, (_, i) => mk(i + 1, { status: i === 0 ? 'fixed' : 'open' }))
   await openAdmin(page, { view: 'inbox', items, search: '?status=all' })
   await list(page).getByRole('button', { name: /Feedback 1\b/ }).first().click()
-  await detail(page).getByRole('button', { name: 'Reopen' }).click()
+  await detail(page).getByRole('button', { name: 'Move to To Fix' }).click()
   await page.getByRole('button', { name: 'Back' }).click()
   await expect(page.getByTestId('undo-bar')).toBeVisible()
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
   const more = (await list(page).getByRole('button', { name: 'Load more' }).boundingBox())!
   const bar = (await page.getByTestId('undo-bar').boundingBox())!
   expect(more.y + more.height, 'Load more ends above the Undo bar').toBeLessThanOrEqual(bar.y)
+})
+
+// ---- Triage gate ----
+
+test('To Review: actions are exactly Move to To Fix, Defer, Dismiss; Move to To Fix PATCHes open, moves counts, and Undo goes back to review', async ({ page }) => {
+  const { calls, store } = await openAdmin(page, {
+    view: 'inbox',
+    search: '',
+    items: [mk(1, { status: 'review' }), mk(2, { status: 'review' }), mk(3)],
+  })
+  await expect(tab(page, 'To Review')).toHaveText(/To Review\s*2/)
+  await list(page).getByRole('button', { name: /Feedback 1/ }).click()
+  await expect(detail(page).getByText('Feedback 1')).toBeVisible()
+  await expect(detail(page).getByTestId('status')).toHaveText(/To Review/)
+  await expect(detail(page).getByRole('button', { name: 'Move to To Fix' })).toBeVisible()
+  await expect(detail(page).getByRole('button', { name: 'Defer' })).toBeVisible()
+  await expect(detail(page).getByRole('button', { name: 'Dismiss' })).toBeVisible()
+  await expect(detail(page).getByRole('button', { name: 'Mark fixed' })).toHaveCount(0)
+  await expect(detail(page).getByRole('button', { name: 'Reopen' })).toHaveCount(0)
+
+  await detail(page).getByRole('button', { name: 'Move to To Fix' }).click()
+  await expect(list(page).getByText('Feedback 1', { exact: true })).toHaveCount(0)
+  await expect(tab(page, 'To Review')).toHaveText(/To Review\s*1/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*2/)
+  await expect(tab(page, 'All')).toHaveText(/All\s*3/)
+  const bar = page.getByTestId('undo-bar')
+  await expect(bar).toHaveText('Moved to To Fix · Undo')
+  const firstTs = store.get(mk(1).id)!.status_updated_at
+  expect(calls.filter((c) => c.method === 'PATCH')[0].body).toEqual({ status: 'open', expected_status_updated_at: 'ts-1' })
+
+  await bar.getByRole('button', { name: 'Undo' }).click()
+  await expect.poll(() => calls.filter((c) => c.method === 'PATCH').length).toBe(2)
+  expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ status: 'review', expected_status_updated_at: firstTs })
+  await expect(list(page).getByRole('button', { name: /Feedback 1/ })).toBeVisible()
+  await expect(tab(page, 'To Review')).toHaveText(/To Review\s*2/)
+  await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*1/)
+  expect(store.get(mk(1).id)!.status).toBe('review')
 })

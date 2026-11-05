@@ -71,8 +71,8 @@ Is it pitch ready? Will SJ fire us? What questions will he ask? What gaps will h
 
 | Command | What it does |
 |---------|-------------|
-| `/redline check` | See open feedback |
-| `/redline fix` | Fix all open redlines |
+| `/redline check` | See feedback waiting to be fixed |
+| `/redline fix` | Fix every redline in To Fix |
 | `/redline fix <uuid>` | Fix a specific one |
 | `/redline clear` | Clear all feedback |
 | `/redline defer <n>` | Defer / list / undo |
@@ -149,7 +149,7 @@ For testers on a deployed build. Feedback goes into the host's own Supabase proj
 
 Setup:
 
-1. Copy `supabase/migrations/*.sql` (three files) into your migrations (rename them with your own timestamps) and apply them. The third one, `redline_inbox`, adds `status_updated_at`, `status_updated_by` and the index the admin inbox uses.
+1. Copy `supabase/migrations/*.sql` (four files) into your migrations (rename them with your own timestamps, keeping their order, since each builds on the one before) and apply them. The third one, `redline_inbox`, adds `status_updated_at`, `status_updated_by` and the index the admin inbox uses. The fourth, `redline_triage`, adds the To Review status that every tester submission starts in.
 2. Add `feedback` to the exposed schemas: Dashboard → Data API settings, or `schemas = [..., "feedback"]` under `[api]` in `config.toml`.
 3. Deploy the purge function: copy `supabase/functions/redline-purge/`, then `supabase functions deploy redline-purge --no-verify-jwt`.
 4. Pick a long random string and set it in both places:
@@ -184,7 +184,7 @@ node redline/redline.mjs push   # send local status changes back to the inbox
 
 `/redline check` pulls first, and `/redline fix` and `/redline defer` push afterwards, so `/redline` and the inbox show one status. `/redline clear` empties only the local file, never the remote rows.
 
-The dev machine never holds the service-role key. The CLI talks only to the `redline-sync` function with the sync secret, and that function can list feedback and change status, nothing else. `REDLINE_REMOTE_URL` and `REDLINE_SYNC_SECRET` come from the environment or `.env.redline`, kept apart from your app's own `SUPABASE_URL` because a dev env usually points at a local stack while tester feedback lives in a deployed project. Every `pull` and `push` prints the host it's talking to.
+The dev machine never holds the service-role key. The CLI talks only to the `redline-sync` function with the sync secret, and that function can list feedback you've approved for fixing and change its status, nothing else. `REDLINE_REMOTE_URL` and `REDLINE_SYNC_SECRET` come from the environment or `.env.redline`, kept apart from your app's own `SUPABASE_URL` because a dev env usually points at a local stack while tester feedback lives in a deployed project. Every `pull` and `push` prints the host it's talking to.
 
 Sync rules: `pull` takes the remote copy unless you changed the status locally and the remote hasn't moved, in which case your change waits for `push`. If both changed, the inbox wins, and `pull` lists each local change it discarded by id and page. `push` is a conditional update, so if the inbox changed in the meantime it does nothing for that item and tells you to run `pull`. Items created locally are never pushed.
 
@@ -192,7 +192,9 @@ Retention reaches the dev machine too. Every `pull` deletes local items whose `e
 
 ## Admin inbox
 
-An inbox for the person running the alpha, inside your own admin area. It reads and triages Supabase-mode feedback from a browser or phone: filter by status, tester and version, open an item to see the feedback, screenshot, page, tester, app version and time, then Mark fixed, Defer, Dismiss or Reopen. A status change is optimistic with a 5 second Undo, and a stale change (someone else got there first) shows "Changed elsewhere" and reloads the item. It is not available in local mode, where the admin API returns 404.
+An inbox for the person running the alpha, inside your own admin area. It reads and triages Supabase-mode feedback from a browser or phone: filter by status, tester and version, and open an item to see the feedback, screenshot, page, tester, app version and time.
+
+Every tester submission lands in **To Review**, and nothing there can be fixed. You read it and decide: **Move to To Fix**, Defer or Dismiss. Only feedback you've moved to To Fix reaches `/redline fix`. The gate is enforced by the database and the `redline-sync` function, not trusted to the CLI: moving an item to To Fix stamps it as approved, and the function only lists, changes or echoes approved items. Feedback still in To Review, or deferred or dismissed straight from it, never reaches your dev machine or the coding agent. Undoing a Move to To Fix sends the item back to To Review and withdraws the approval, and the next `pull` removes its local copy. From To Fix an item goes to Fixed, usually by `/redline fix`, or by Mark fixed in the inbox. A fixed, deferred or dismissed item can be moved back to To Fix, never back to To Review, since you've already reviewed it. Tabs: To Review, To Fix, Deferred, Fixed, Dismissed, All. A status change is optimistic with a 5 second Undo, and a stale change (someone else got there first) shows "Changed elsewhere" and reloads the item. It is not available in local mode, where the admin API returns 404.
 
 Three pieces, all copied into your project:
 
@@ -208,7 +210,7 @@ export default function Page() {
 }
 ```
 
-State lives in the URL (`?status=open&id=<uuid>`) through the History API, so a notification link opens the item directly and the browser's Back button works. At 1024px and up it is a list with a detail pane; below that, the detail opens full-width with a Back control.
+State lives in the URL (`?status=review&id=<uuid>`) through the History API, so a notification link opens the item directly and the browser's Back button works. At 1024px and up it is a list with a detail pane; below that, the detail opens full-width with a Back control.
 
 Hooks you implement in the route files:
 
@@ -218,9 +220,9 @@ Hooks you implement in the route files:
 | `describeTesters(ids)` | both admin route files, optional | `Record<string, string>` mapping tester ids to display labels (a name or email). Without it the inbox shows the raw id. |
 | `onRedlineCreated(summary)` | `app/api/redlines/route.ts`, optional | Nothing. It runs after the tester's response is sent, and if it throws, the error is logged and the tester still gets their 201. |
 
-Notification content rule: `onRedlineCreated` receives the page path, tester id, app version, time, whether a screenshot is attached, the UX-review flag and the item id. It never receives feedback text, element text or screenshots, because feedback is free-typed and may contain patient details, and email lacks the database's access controls. Send the owner a link such as `/admin/redline?id=<id>` and let them read the content in the inbox, behind the admin check.
+Notification content rule: `onRedlineCreated` receives the page path, tester id, app version, time, whether a screenshot is attached, the UX-review flag and the item id. It never receives feedback text, element text or screenshots, because feedback is free-typed and may contain patient details, and email lacks the database's access controls. Send the owner a link such as `/admin/redline?status=review&id=<id>` and let them read and triage the content in the inbox, behind the admin check.
 
-Every admin response is sent with `Cache-Control: no-store`. PATCH needs `Content-Type: application/json`, a valid status (`open`, `fixed`, `dismissed`, `deferred`) and a UUID id. Screenshot URLs are signed for 5 minutes, made when an item is opened, and never stored.
+Every admin response is sent with `Cache-Control: no-store`. PATCH needs `Content-Type: application/json`, a valid status (`review`, `open`, `fixed`, `dismissed`, `deferred`; `open` is To Fix; `review` is accepted so Undo can return an item to To Review) and a UUID id. Screenshot URLs are signed for 5 minutes, made when an item is opened, and never stored.
 
 ## Development
 
