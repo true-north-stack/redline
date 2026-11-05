@@ -23,7 +23,7 @@ Route to the appropriate redline subcommand based on the argument:
 
 Storage: `redline/feedback.json` in the project root — a JSON array of redline objects.
 
-Each redline object has: `id`, `page_url`, `element_selector`, `element_text`, `feedback`, `screenshot_path`, `status` (open|fixed|dismissed|deferred), `created_at`. Newer items also carry `ux_review_requested`, `tester_id`, `app_version`, `user_agent` and `expires_at`.
+Each redline object has: `id`, `page_url`, `element_selector`, `element_text`, `feedback`, `screenshot_path`, `status` (open|fixed|dismissed|deferred), `created_at`. `open` is the admin inbox's To Fix: feedback the owner has reviewed and wants fixed. An entry with any other status, including `review`, is never something to fix unless the user names its id. Newer items also carry `ux_review_requested`, `tester_id`, `app_version`, `user_agent` and `expires_at`.
 
 Masked content appears as `[redacted]` in `element_text` and as black boxes in screenshots. Query values in `page_url` are saved as `…`. Don't try to recover any of it.
 

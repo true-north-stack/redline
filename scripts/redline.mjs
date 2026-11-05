@@ -225,16 +225,17 @@ async function pull() {
   }
 
   // Retention reaches this machine too. The list above is complete (the function pages
-  // through every row), so a pulled item missing from it was purged or deleted remotely.
+  // through every approved row), so a pulled item missing from it was purged, deleted, or
+  // sent back to To Review in the inbox.
   const removed = items.filter((r) => (r.source === 'remote' && !remoteIds.has(r.id)) || isExpired(r, now))
   const changedLocally = removed.filter((r) => r.source === 'remote' && r.status !== r.remote_status).map((r) => r.id)
   for (const r of removed) await removeScreenshot(r.screenshot_path)
   const gone = new Set(removed)
   await writeItems(items.filter((r) => !gone.has(r)))
-  console.log(`Pulled ${added} new, ${updated} updated${discarded ? `, ${discarded} local change${discarded === 1 ? '' : 's'} discarded` : ''} (${json.items.length} in the inbox).`)
+  console.log(`Pulled ${added} new, ${updated} updated${discarded ? `, ${discarded} local change${discarded === 1 ? '' : 's'} discarded` : ''} (${json.items.length} reviewed in the inbox).`)
   if (removed.length) {
     const note = changedLocally.length ? ` (including ${changedLocally.join(', ')}, changed locally)` : ''
-    console.log(`Removed ${removed.length} expired or purged redline${removed.length === 1 ? '' : 's'}${note}.`)
+    console.log(`Removed ${removed.length} redline${removed.length === 1 ? '' : 's'} no longer here to fix (expired, purged, or sent back to To Review)${note}.`)
   }
 }
 
@@ -260,7 +261,7 @@ async function push() {
         console.log(`Conflict on ${r.id}: changed in the inbox. Run pull.`)
         conflicts++
       } else if (status === 404) {
-        console.log(`Not found on ${r.id}: it is gone from the inbox (purged?). Left as is.`)
+        console.log(`Not found on ${r.id}: it was purged or sent back to To Review in the inbox. Left as is.`)
       } else {
         throw new Error(`Push failed for ${r.id} (${status}).`)
       }

@@ -11,3 +11,12 @@ export interface AdminListResponse {
   versions: string[]
 }
 export interface AdminConflict { current: AdminItem }
+
+/** What the owner sees for each status. */
+export const STATUS_LABELS: Record<RedlineStatus, string> = {
+  review: 'To Review',
+  open: 'To Fix',
+  deferred: 'Deferred',
+  fixed: 'Fixed',
+  dismissed: 'Dismissed',
+}

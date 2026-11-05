@@ -96,7 +96,7 @@ async function rpcSummary(key: string) {
   const res = await rpcRaw(key)
   expect(res.status).toBe(200)
   return (await res.json()) as {
-    counts: { open: number; fixed: number; dismissed: number; deferred: number }
+    counts: { review: number; open: number; fixed: number; dismissed: number; deferred: number }
     testers: string[]
     versions: string[]
   }
@@ -325,11 +325,36 @@ test('inbox_summary returns zero-filled counts, testers and versions; the public
   const before = await rpcSummary(SECRET)
   await saveWithScreenshot(item({ tester_id: 'tester-sum', app_version: '9.9.9' }))
   const after = await rpcSummary(SECRET)
-  expect(Object.keys(after.counts).sort()).toEqual(['deferred', 'dismissed', 'fixed', 'open'])
+  expect(Object.keys(after.counts).sort()).toEqual(['deferred', 'dismissed', 'fixed', 'open', 'review'])
   expect(after.counts.open).toBe(before.counts.open + 1)
   expect(after.testers).toContain('tester-sum')
   expect(after.versions).toContain('9.9.9')
   expect((await rpcRaw(PUBLIC)).status).not.toBe(200)
+})
+
+test('triage: the column defaults to review, the constraint accepts it, and inbox_summary counts it', async () => {
+  const before = await rpcSummary(SECRET)
+  const { status: _omit, ...rest } = item()
+  const res = await fetch(`${URL_}/rest/v1/items`, {
+    method: 'POST',
+    headers: { ...restHeaders(SECRET), 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    body: JSON.stringify(rest),
+  })
+  expect(res.ok).toBe(true)
+  const [created] = await res.json()
+  expect(created.status).toBe('review')
+  const explicit = item({ status: 'review' })
+  await store().saveItem(explicit)
+  expect((await readRow(explicit.id)).status).toBe('review')
+  const bogus = await fetch(`${URL_}/rest/v1/items`, {
+    method: 'POST',
+    headers: { ...restHeaders(SECRET), 'Content-Type': 'application/json' },
+    body: JSON.stringify(item({ status: 'bogus' as never })),
+  })
+  expect(bogus.ok).toBe(false)
+  const after = await rpcSummary(SECRET)
+  expect(after.counts.review).toBe(before.counts.review + 2)
+  expect(after.counts.open).toBe(before.counts.open)
 })
 
 test('query pages newest first with a stable cursor', async () => {
@@ -451,8 +476,11 @@ test('sync rejects unknown actions, bad ids and bad statuses with 400', async ()
 
 test('sync list returns every status with signed screenshot URLs that download', async () => {
   const a = await saveWithScreenshot(item())
-  const b = item({ status: 'dismissed' })
+  // Approval comes from passing through To Fix: insert as open, then dismiss
+  const b = item()
   await store().saveItem(b)
+  const seenB = (await store().get(b.id))!
+  expect(await store().setStatus(b.id, 'dismissed', 'admin-1', seenB.status_updated_at!)).toHaveProperty('item')
   const res = await sync({ action: 'list' })
   expect(res.status).toBe(200)
   const { items } = await res.json()
@@ -487,6 +515,146 @@ test('sync set_status succeeds, conflicts with 409 and misses with 404', async (
   const missing = await sync({ action: 'set_status', id: crypto.randomUUID(), status: 'fixed', expected_status_updated_at: t0 })
   expect(missing.status).toBe(404)
   expect(await missing.json()).toEqual({ missing: true })
+})
+
+test('sync list excludes To Review items and includes To Fix items', async () => {
+  const review = item({ status: 'review', feedback: 'tester text awaiting triage' })
+  const open = item()
+  await store().saveItem(review)
+  await store().saveItem(open)
+  const res = await sync({ action: 'list' })
+  expect(res.status).toBe(200)
+  const { items } = await res.json()
+  const ids = items.map((r: RedlineItem) => r.id)
+  expect(ids).toContain(open.id)
+  expect(ids).not.toContain(review.id)
+  expect(JSON.stringify(items)).not.toContain('tester text awaiting triage')
+})
+
+test('sync set_status rejects review with 400', async () => {
+  const r = item()
+  await store().saveItem(r)
+  const t0 = (await readRow(r.id)).status_updated_at
+  const res = await sync({ action: 'set_status', id: r.id, status: 'review', expected_status_updated_at: t0 })
+  expect(res.status).toBe(400)
+  const row = await readRow(r.id)
+  expect(row.status).toBe('open')
+  expect(row.status_updated_at).toBe(t0)
+})
+
+test('sync set_status on a To Review item is 404 missing, never a 409 with content, and changes nothing', async () => {
+  const r = item({ status: 'review', feedback: 'secret review text' })
+  await store().saveItem(r)
+  const t0 = (await readRow(r.id)).status_updated_at
+
+  const correct = await sync({ action: 'set_status', id: r.id, status: 'fixed', expected_status_updated_at: t0 })
+  expect(correct.status).toBe(404)
+  expect(await correct.json()).toEqual({ missing: true })
+
+  const stale = await sync({ action: 'set_status', id: r.id, status: 'fixed', expected_status_updated_at: '2000-01-01T00:00:00.000Z' })
+  expect(stale.status).toBe(404)
+  const body = await stale.text()
+  expect(JSON.parse(body)).toEqual({ missing: true })
+  expect(body).not.toContain('secret review text')
+
+  const row = await readRow(r.id)
+  expect(row.status).toBe('review')
+  expect(row.status_updated_at).toBe(t0)
+})
+
+test('pull never brings a To Review item into feedback.json, and does once it is moved to To Fix', async () => {
+  const root = await newRoot()
+  const gated = item({ status: 'review' })
+  const open = item()
+  await store().saveItem(gated)
+  await store().saveItem(open)
+  expect(cli(root, ['pull'], remoteEnv).code).toBe(0)
+  const ids = (await readLocal(root)).map((x) => x.id)
+  expect(ids).toContain(open.id)
+  expect(ids).not.toContain(gated.id)
+  const seen = (await store().get(gated.id))!
+  expect(await store().setStatus(gated.id, 'open', 'admin-1', seen.status_updated_at!)).toHaveProperty('item')
+  expect(cli(root, ['pull'], remoteEnv).code).toBe(0)
+  expect((await readLocal(root)).map((x) => x.id)).toContain(gated.id)
+})
+
+test('triage: review to deferred or dismissed is never listed, and set_status on it is 404 without echoing text', async () => {
+  for (const next of ['deferred', 'dismissed'] as const) {
+    const r = item({ status: 'review', feedback: `unapproved ${next} text` })
+    await store().saveItem(r)
+    const seen = (await store().get(r.id))!
+    expect(await store().setStatus(r.id, next, 'admin-1', seen.status_updated_at!)).toHaveProperty('item')
+    const row = await readRow(r.id)
+    expect(row.status).toBe(next)
+    expect(row.approved_at).toBeNull()
+
+    const { items } = await (await sync({ action: 'list' })).json()
+    expect(items.map((x: RedlineItem) => x.id)).not.toContain(r.id)
+
+    const res = await sync({ action: 'set_status', id: r.id, status: 'fixed', expected_status_updated_at: row.status_updated_at })
+    expect(res.status).toBe(404)
+    const body = await res.text()
+    expect(JSON.parse(body)).toEqual({ missing: true })
+    expect(body).not.toContain('unapproved')
+    const stale = await sync({ action: 'set_status', id: r.id, status: 'fixed', expected_status_updated_at: '2000-01-01T00:00:00.000Z' })
+    expect(stale.status).toBe(404)
+    expect(await stale.text()).not.toContain('unapproved')
+    expect((await readRow(r.id)).status).toBe(next)
+  }
+})
+
+test('triage: review to open to deferred is listed; approved_at is set on To Fix and kept after defer', async () => {
+  const r = item({ status: 'review' })
+  await store().saveItem(r)
+  expect((await readRow(r.id)).approved_at).toBeNull()
+  const s1 = (await store().get(r.id))!
+  expect(await store().setStatus(r.id, 'open', 'admin-1', s1.status_updated_at!)).toHaveProperty('item')
+  const approved = (await readRow(r.id)).approved_at
+  expect(approved).toBeTruthy()
+  const s2 = (await store().get(r.id))!
+  expect(await store().setStatus(r.id, 'deferred', 'admin-1', s2.status_updated_at!)).toHaveProperty('item')
+  const row = await readRow(r.id)
+  expect(row.status).toBe('deferred')
+  expect(row.approved_at).toBe(approved)
+  const { items } = await (await sync({ action: 'list' })).json()
+  expect(items.find((x: RedlineItem) => x.id === r.id)?.status).toBe('deferred')
+})
+
+test('triage: open back to review clears approved_at, unlists the item, and pull removes the local copy', async () => {
+  const root = await newRoot()
+  const r = await saveWithScreenshot(item())
+  expect((await readRow(r.id)).approved_at).toBeTruthy()
+  expect(cli(root, ['pull'], remoteEnv).code).toBe(0)
+  expect((await readLocal(root)).map((x) => x.id)).toContain(r.id)
+
+  const seen = (await store().get(r.id))!
+  expect(await store().setStatus(r.id, 'review', 'admin-1', seen.status_updated_at!)).toHaveProperty('item')
+  const row = await readRow(r.id)
+  expect(row.status).toBe('review')
+  expect(row.approved_at).toBeNull()
+  const { items } = await (await sync({ action: 'list' })).json()
+  expect(items.map((x: RedlineItem) => x.id)).not.toContain(r.id)
+
+  const pulled = cli(root, ['pull'], remoteEnv)
+  expect(pulled.code).toBe(0)
+  expect(pulled.out).toContain('Removed 1 redline no longer here to fix (expired, purged, or sent back to To Review).')
+  expect((await readLocal(root)).map((x) => x.id)).not.toContain(r.id)
+  expect(await exists(join(root, 'redline', 'screenshots', `${r.id}.png`))).toBe(false)
+})
+
+test('triage: set_status open on an unapproved review item is 404 and leaves it in review', async () => {
+  const r = item({ status: 'review', feedback: 'unapproved open attempt' })
+  await store().saveItem(r)
+  const t0 = (await readRow(r.id)).status_updated_at
+  const res = await sync({ action: 'set_status', id: r.id, status: 'open', expected_status_updated_at: t0 })
+  expect(res.status).toBe(404)
+  const body = await res.text()
+  expect(JSON.parse(body)).toEqual({ missing: true })
+  expect(body).not.toContain('unapproved')
+  const row = await readRow(r.id)
+  expect(row.status).toBe('review')
+  expect(row.approved_at).toBeNull()
+  expect(row.status_updated_at).toBe(t0)
 })
 
 test('sync cannot delete', async () => {
@@ -568,7 +736,7 @@ test('pull removes a pulled item the remote has purged, with its screenshot', as
   await deleteRemote(r0)
   const r = cli(root, ['pull'], remoteEnv)
   expect(r.code).toBe(0)
-  expect(r.out).toContain('Removed 1 expired or purged redline.')
+  expect(r.out).toContain('Removed 1 redline no longer here to fix (expired, purged, or sent back to To Review).')
   expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
   expect(await exists(shot)).toBe(false)
 })
@@ -582,7 +750,7 @@ test('pull removes local items past expires_at and keeps unexpired local-only on
   await writeFile(feedbackFile(root), JSON.stringify([expired, fresh]))
   const r = cli(root, ['pull'], remoteEnv)
   expect(r.code).toBe(0)
-  expect(r.out).toContain('Removed 1 expired or purged redline.')
+  expect(r.out).toContain('Removed 1 redline no longer here to fix (expired, purged, or sent back to To Review).')
   const ids = (await readLocal(root)).map((x) => x.id)
   expect(ids).not.toContain(expired.id)
   expect(ids).toContain(fresh.id)
@@ -596,7 +764,7 @@ test('pull names a removed item that had an unpushed local change', async () => 
   await editLocal(root, r0.id, { status: 'fixed' })
   await deleteRemote(r0)
   const r = cli(root, ['pull'], remoteEnv)
-  expect(r.out).toContain(`Removed 1 expired or purged redline (including ${r0.id}, changed locally).`)
+  expect(r.out).toContain(`Removed 1 redline no longer here to fix (expired, purged, or sent back to To Review) (including ${r0.id}, changed locally).`)
   expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
 })
 

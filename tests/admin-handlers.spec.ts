@@ -30,7 +30,7 @@ function memoryStore(initial: RedlineItem[], kind: 'local' | 'supabase' = 'supab
     },
     async summary() {
       calls.push('summary')
-      return { counts: { open: 2, fixed: 0, dismissed: 0, deferred: 0 }, testers: [T1], versions: ['1.0'] }
+      return { counts: { review: 0, open: 2, fixed: 0, dismissed: 0, deferred: 0 }, testers: [T1], versions: ['1.0'] }
     },
     async get(id) { calls.push('get'); return items.find((i) => i.id === id) ?? null },
     async setStatus(id, status, by, expected) {
@@ -170,6 +170,13 @@ test('patch: 415 without a JSON content type; 400 for bad input', async () => {
   expect((await h.patch(patchReq({ status: 'fixed' }), A)).status).toBe(400)
   expect((await h.patch(patchReq('{bad json'), A)).status).toBe(400)
   expect(store.calls).toEqual([])
+})
+
+test('patch accepts status review (Undo of Move to To Fix)', async () => {
+  const { h } = setup()
+  const res = await h.patch(patchReq({ status: 'review', expected_status_updated_at: 'stamp-0' }), A)
+  expect(res.status).toBe(200)
+  expect((await res.json()).status).toBe('review')
 })
 
 test("patch: 200 sets status_updated_by to the admin's id; 409 returns { current }", async () => {

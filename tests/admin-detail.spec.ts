@@ -54,7 +54,7 @@ test('expired screenshot refetches once, then gives up', async ({ page }) => {
 
 test('each action PATCHes its status with expected_status_updated_at', async ({ page }) => {
   const { calls } = await openAdmin(page, { view: 'detail', id: ID, items: [item] })
-  await expect(page.getByRole('button', { name: 'Reopen' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Move to To Fix' })).toHaveCount(0)
 
   for (const [label, status] of [['Mark fixed', 'fixed'], ['Defer', 'deferred'], ['Dismiss', 'dismissed']] as const) {
     const before = calls.filter((c) => c.method === 'PATCH').length
@@ -63,12 +63,12 @@ test('each action PATCHes its status with expected_status_updated_at', async ({ 
     const patch = calls.filter((c) => c.method === 'PATCH').at(-1)!
     expect(patch.body.status).toBe(status)
     expect(typeof patch.body.expected_status_updated_at).toBe('string')
-    await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible()
-    // Reopen back to open so the next action is available again, with the fresh token
-    await page.getByRole('button', { name: 'Reopen' }).click()
+    await expect(page.getByRole('button', { name: 'Move to To Fix' })).toBeVisible()
+    // Move back to To Fix so the next action is available again, with the fresh token
+    await page.getByRole('button', { name: 'Move to To Fix' }).click()
     await expect.poll(() => calls.filter((c) => c.method === 'PATCH').length).toBe(before + 2)
     expect(calls.filter((c) => c.method === 'PATCH').at(-1)!.body.status).toBe('open')
-    await expect(page.getByRole('button', { name: 'Reopen' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Move to To Fix' })).toHaveCount(0)
   }
 
   const patches = calls.filter((c) => c.method === 'PATCH')
@@ -82,19 +82,37 @@ test('each action PATCHes its status with expected_status_updated_at', async ({ 
   expect(changed[0].payload.previous.status).toBe('open')
 })
 
-test('actions are at least 44px tall and Reopen appears for non-open items', async ({ page }) => {
+test('a To Review item offers exactly Move to To Fix, Defer and Dismiss; Move to To Fix PATCHes open', async ({ page }) => {
+  const { calls } = await openAdmin(page, { view: 'detail', id: ID, items: [makeItem({ status: 'review' })] })
+  await expect(page.getByTestId('status')).toHaveText(/To Review/)
+  const buttons = page.getByRole('button', { name: /^(Move to To Fix|Defer|Dismiss|Mark fixed|Reopen)$/ })
+  await expect(buttons).toHaveText(['Move to To Fix', 'Defer', 'Dismiss'])
+  await page.getByRole('button', { name: 'Move to To Fix' }).click()
+  await expect.poll(() => calls.filter((c) => c.method === 'PATCH').length).toBe(1)
+  expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ status: 'open', expected_status_updated_at: 'opaque-ts-1' })
+  await expect(page.getByTestId('status')).toHaveText(/To Fix/)
+  await expect(page.getByRole('button', { name: 'Mark fixed' })).toBeVisible()
+})
+
+test('actions are at least 44px tall', async ({ page }) => {
   await openAdmin(page, { view: 'detail', id: ID, items: [makeItem({ status: 'deferred' })] })
-  for (const name of ['Mark fixed', 'Dismiss', 'Reopen']) {
+  for (const name of ['Mark fixed', 'Dismiss', 'Move to To Fix']) {
     const box = await page.getByRole('button', { name }).boundingBox()
     expect(box!.height, name).toBeGreaterThanOrEqual(44)
   }
+})
+
+test('a deferred item offers exactly Mark fixed, Dismiss and Move to To Fix', async ({ page }) => {
+  await openAdmin(page, { view: 'detail', id: ID, items: [makeItem({ status: 'deferred' })] })
+  const buttons = page.getByRole('button', { name: /^(Move to To Fix|Defer|Dismiss|Mark fixed|Reopen)$/ })
+  await expect(buttons).toHaveText(['Mark fixed', 'Dismiss', 'Move to To Fix'])
 })
 
 test('409 shows "Changed elsewhere. Showing the latest." and renders the current status', async ({ page }) => {
   await openAdmin(page, { view: 'detail', id: ID, items: [item], conflictWith: { status: 'dismissed' } })
   await page.getByRole('button', { name: 'Mark fixed' }).click()
   await expect(page.getByText('Changed elsewhere. Showing the latest.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Reopen' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Move to To Fix' })).toBeVisible()
   await expect(page.getByTestId('status')).toHaveText(/dismissed/i)
   expect((await events(page)).filter((e) => e.type === 'statusChanged')).toHaveLength(0)
   const refreshed = (await events(page)).filter((e) => e.type === 'refreshed')
@@ -152,7 +170,7 @@ test('a PATCH that resolves after switching items is still reported', async ({ p
   expect(ev.payload.previous.status).toBe('open')
   // The late result must not repaint the item now on screen
   await expect(page.getByText('Second item')).toBeVisible()
-  await expect(page.getByTestId('status')).toHaveText(/open/i)
+  await expect(page.getByTestId('status')).toHaveText(/To Fix/)
 })
 
 test('viewer: focus moves in, Tab stays inside, Escape returns focus to the thumbnail', async ({ page }) => {

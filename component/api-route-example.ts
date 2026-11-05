@@ -44,8 +44,8 @@ async function getTesterId(_req: Request): Promise<string | null> {
  *   async function onRedlineCreated(s: NotificationSummary) {
  *     await sendEmail({
  *       to: 'owner@example.com',
- *       subject: `New redline on ${s.page_url}`,
- *       text: `Open the inbox: https://app.example.com/admin/redline?id=${s.id}`,
+ *       subject: `New feedback to review on ${s.page_url}`,
+ *       text: `Review it: https://app.example.com/admin/redline?status=review&id=${s.id}`,
  *     })
  *   }
  */

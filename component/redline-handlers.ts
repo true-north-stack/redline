@@ -105,7 +105,9 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
         element_text: (fields.element_text as string | null) || null,
         feedback: fields.feedback,
         screenshot_path: screenshot ? await store.saveAttachment(id, screenshot) : null,
-        status: 'open',
+        // Tester feedback waits in To Review until the owner moves it to To Fix. In local
+        // mode the owner is the one leaving it, so it starts in To Fix.
+        status: isSupabase ? 'review' : 'open',
         created_at: now.toISOString(),
         ux_review_requested: fields.ux_review_requested === true,
         tester_id: testerId,
