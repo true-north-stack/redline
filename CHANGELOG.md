@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.0 (unreleased)
+## 1.3.0 (2026-11-06)
 
 Redline now works with a finger, and tells people how to use it the first time.
 
