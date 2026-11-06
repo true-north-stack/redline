@@ -778,3 +778,26 @@ test('pull never removes anything when the remote list fails', async () => {
   expect(await readFile(feedbackFile(root), 'utf-8')).toBe(before)
   expect(await exists(join(root, 'redline', 'screenshots', `${r0.id}.png`))).toBe(true)
 })
+
+test('the table rejects text over the route caps and accepts text at them', async () => {
+  const s = store()
+  const over: [string, Partial<RedlineItem>][] = [
+    ['feedback', { feedback: 'x'.repeat(5001) }],
+    ['element_text', { element_text: 'x'.repeat(2001) }],
+    ['element_selector', { element_selector: 'x'.repeat(1001) }],
+    ['page_url', { page_url: '/' + 'x'.repeat(2000) }],
+    ['user_agent', { user_agent: 'x'.repeat(513) }],
+  ]
+  for (const [field, o] of over) {
+    await expect(s.saveItem(item(o)), field).rejects.toThrow()
+  }
+  const atCap = item({
+    feedback: 'x'.repeat(5000),
+    element_text: 'x'.repeat(2000),
+    element_selector: 'x'.repeat(1000),
+    page_url: '/' + 'x'.repeat(1999),
+    user_agent: 'x'.repeat(512),
+  })
+  await s.saveItem(atCap)
+  expect((await s.get(atCap.id))?.feedback.length).toBe(5000)
+})

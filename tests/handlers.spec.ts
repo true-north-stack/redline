@@ -165,3 +165,162 @@ test('a defer that throws synchronously still yields 201 and the item is saved',
     console.error = orig
   }
 })
+
+test('limits: a note over 5000 characters is 413 naming the field, and nothing is saved', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const res = await h.POST(post({ ...payload, feedback: 'x'.repeat(5001) }))
+  expect(res.status).toBe(413)
+  expect(await res.json()).toEqual({ error: 'too_large', field: 'feedback' })
+  expect(store.items.length).toBe(0)
+})
+
+test('limits: fields Redline collects (page URL, selector, element text) are cut to size, not refused', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const res = await h.POST(post({
+    ...payload,
+    page_url: '/' + 'x'.repeat(3000),
+    element_selector: 's'.repeat(1500),
+    element_text: 't'.repeat(2500),
+  }))
+  expect(res.status).toBe(201)
+  const [saved] = store.items
+  expect(saved.page_url.length).toBe(2000)
+  expect(saved.element_selector).toBe('s'.repeat(1000))
+  expect(saved.element_text).toBe('t'.repeat(2000))
+})
+
+test('limits: a page URL that grows when sanitized is still cut to 2000', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  // Bare keys gain "=…" when sanitized, so a URL under the cap comes out over it
+  const res = await h.POST(post({ ...payload, page_url: '/p?' + Array(700).fill('a').join('&') }))
+  expect(res.status).toBe(201)
+  expect(store.items[0].page_url.length).toBeLessThanOrEqual(2000)
+})
+
+test('limits: a text field that is not a string is 400, so it cannot slip past the caps', async () => {
+  for (const [field, value] of [
+    ['element_text', { x: 'y'.repeat(100_000) }],
+    ['feedback', ['a']],
+    ['page_url', 42],
+  ] as const) {
+    const store = memoryStore()
+    const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+    const res = await h.POST(post({ ...payload, [field]: value }))
+    expect(res.status, field).toBe(400)
+    expect(await res.json()).toEqual({ error: 'invalid field', field })
+    expect(store.items.length).toBe(0)
+  }
+})
+
+test('limits: a file sent as a text field in multipart is 400', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const form = new FormData()
+  form.set('page_url', '/x')
+  form.set('feedback', 'hello')
+  form.set('element_text', new File(['z'.repeat(10_000)], 'a.txt'))
+  const res = await h.POST(new Request('http://x/api/redlines', { method: 'POST', body: form }))
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'invalid field', field: 'element_text' })
+})
+
+test('limits: a body with no content-length is counted as it streams and refused past 10 MB', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const chunk = new Uint8Array(1024 * 1024).fill(32)
+  let sent = 0
+  const stream = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (sent++ < 20) c.enqueue(chunk)
+      else c.close()
+    },
+  })
+  const req = new Request('http://x/api/redlines', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: stream,
+    // @ts-expect-error Node needs duplex for a streamed request body
+    duplex: 'half',
+  })
+  expect(req.headers.get('content-length')).toBeNull()
+  const res = await h.POST(req)
+  expect(res.status).toBe(413)
+  expect(await res.json()).toEqual({ error: 'too_large', field: 'request' })
+  expect(sent).toBeLessThan(20)
+})
+
+test('a body that is not valid JSON is 400', async () => {
+  const h = await localHandlers()
+  const res = await h.POST(new Request('http://x/api/redlines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{nope' }))
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'invalid body' })
+})
+
+test('limits: values exactly at the caps are saved', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const res = await h.POST(post({
+    page_url: '/' + 'x'.repeat(1999),
+    element_selector: 'x'.repeat(1000),
+    element_text: 'x'.repeat(2000),
+    feedback: 'x'.repeat(5000),
+  }))
+  expect(res.status).toBe(201)
+  expect(store.items.length).toBe(1)
+})
+
+test('limits: a screenshot over 8 MB is 413 and nothing is stored', async () => {
+  const store = memoryStore()
+  let uploads = 0
+  store.saveAttachment = async (id) => { uploads++; return `${id}.png` }
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const form = new FormData()
+  form.set('page_url', '/x')
+  form.set('element_selector', '#a')
+  form.set('feedback', 'too big')
+  form.set('screenshot', new File([new Uint8Array(8 * 1024 * 1024 + 1)], 'shot.png', { type: 'image/png' }))
+  const res = await h.POST(new Request('http://x/api/redlines', { method: 'POST', body: form }))
+  expect(res.status).toBe(413)
+  expect(await res.json()).toEqual({ error: 'too_large', field: 'screenshot' })
+  expect(uploads).toBe(0)
+  expect(store.items.length).toBe(0)
+})
+
+test('limits: a request declaring more than 10 MB is 413 before the body is read', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const req = new Request('http://x/api/redlines', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': String(10 * 1024 * 1024 + 1) },
+    body: JSON.stringify(payload),
+  })
+  const res = await h.POST(req)
+  expect(res.status).toBe(413)
+  expect(await res.json()).toEqual({ error: 'too_large', field: 'request' })
+})
+
+test('limits: a long user agent is cut to 512 characters, not rejected', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const req = new Request('http://x/api/redlines', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'U'.repeat(900) },
+    body: JSON.stringify(payload),
+  })
+  expect((await h.POST(req)).status).toBe(201)
+  expect(store.items[0].user_agent).toBe('U'.repeat(512))
+})
+
+test('limits: cutting collected text never leaves half an emoji', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  // 1999 ASCII units then an emoji (two units) straddling the 2000 cap
+  const res = await h.POST(post({ ...payload, element_text: 'a'.repeat(1999) + '😀😀' }))
+  expect(res.status).toBe(201)
+  const text = store.items[0].element_text!
+  expect(text).toBe('a'.repeat(1999))
+  expect(() => encodeURIComponent(text)).not.toThrow()
+})
