@@ -57,6 +57,14 @@ const pageHtml = (props: object) => `<!doctype html><html><head><meta charset="u
     <a id="mail" href="mailto:${PRIVATE}">${PRIVATE}</a>
     <a id="call" href="tel:5550100">555-0100</a>
   </div>
+  <div id="rows" style="position: absolute; left: 520px; top: 480px; width: 300px; padding: 8px; background: #eeeeee;">
+    <div class="row"><span>5 invoices</span><span>·</span><span>$932.50 overdue</span></div>
+    <div class="row"><div><div>Due</div><div>Friday</div></div><div>Paid</div></div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr;"><span>Client</span><span>Rate</span><span>[name]</span><span>$90/h</span></div>
+    <div style="display: flex; flex-direction: column;"><span>Line one</span><span>Line two</span></div>
+    <div class="row"><div style="display: contents"><span>Open</span><span>3</span></div></div>
+    <div class="row" style="flex-wrap: wrap; width: 120px;"><span style="width: 100px">Wrapped</span><span style="width: 100px">onto two</span></div>
+  </div>
   <pre id="log" style="position: absolute; left: 40px; top: 650px; margin: 0;">line one
 line two</pre>
   <!-- A component whose masked part shows a name passed in through a slot -->
@@ -204,7 +212,7 @@ async function magenta(page: Page, png: Buffer) {
 
 const shotOf = async (form: FormData) => Buffer.from(await (form.get('screenshot') as File).arrayBuffer())
 
-test('element text keeps separate boxes apart, so a label over a value never runs into one number', async ({ page }) => {
+test('element text keeps separate boxes apart and items side by side on one line', async ({ page }) => {
   const posts = await open(page)
   await pick(page, '#card', 2, 2)
   await page.getByLabel('Include Screenshot').check() // sends a form, as testers do
@@ -214,9 +222,7 @@ test('element text keeps separate boxes apart, so a label over a value never run
     'Unpaid',
     '$5,786.50',
     '5 invoices · $932.50 overdue',
-    'Jobs',
-    '[redacted]',
-    'BKTMV06',
+    'Jobs [redacted] BKTMV06',
     'Confirm More actions',
     'Hello world, again.',
   ].join('\n'))
@@ -374,4 +380,25 @@ test('an overflowing centered flex row scrolled sideways is pictured where it is
   // where green gives way to blue rather than raw shares
   expect(shot.red).toBe(0)
   expect(shot.green / (shot.green + shot.blue)).toBeCloseTo(want.green / (want.green + want.blue), 1)
+})
+
+test('items side by side read on one line; a new row on screen starts a new line', async ({ page }) => {
+  const posts = await open(page)
+  await pick(page, '#rows', 2, 2)
+  await page.getByLabel('Include Screenshot').check()
+  const text = String((await send(page, posts)).get('element_text')).replace(/\r\n/g, '\n')
+  expect(text).toBe([
+    '5 invoices · $932.50 overdue',
+    // An item that stacks its own lines keeps them
+    'Due',
+    'Friday',
+    'Paid',
+    'Client Rate',
+    '[name] $90/h',
+    'Line one',
+    'Line two',
+    'Open 3',
+    'Wrapped',
+    'onto two',
+  ].join('\n'))
 })
