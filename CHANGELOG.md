@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.1 (unreleased)
+## 1.2.1 (2026-11-05)
 
 Fixes from the first host to run 1.2.0 end to end, The Freelancer Tool.
 
