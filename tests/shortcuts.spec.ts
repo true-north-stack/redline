@@ -106,3 +106,13 @@ test('with no Redline dialog, keys from the page still work', async ({ page }) =
   await page.keyboard.type('rrr')
   expect(await activations(page)).toEqual(['element'])
 })
+
+test('Shift or Caps Lock (an uppercase key) still counts', async ({ page }) => {
+  await load(page)
+  // Shift held: the key arrives as "R" with shiftKey set
+  for (let i = 0; i < 3; i++) await page.keyboard.press('Shift+R')
+  // Caps Lock on: the key arrives as "U" or "E" with no modifier
+  await page.keyboard.type('UUU')
+  await page.keyboard.type('EEE')
+  expect(await activations(page)).toEqual(['element', 'element', 'area'])
+})

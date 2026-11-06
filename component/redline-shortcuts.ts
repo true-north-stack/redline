@@ -41,15 +41,18 @@ export function useRedlineShortcuts(
     let times: number[] = []
 
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'r' && e.key !== 'u' && e.key !== 'e') {
+      // Shift held or Caps Lock on still counts: "R" is the same key as "r"
+      if (e.key === 'Shift' || e.key === 'CapsLock') return
+      const pressed = e.key.toLowerCase()
+      if (pressed !== 'r' && pressed !== 'u' && pressed !== 'e') {
         key = ''
         times = []
         return
       }
       if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || redlineDialogOpen()) return
 
-      if (e.key !== key) {
-        key = e.key
+      if (pressed !== key) {
+        key = pressed
         times = []
       }
       const now = performance.now()
