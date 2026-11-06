@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 (unreleased)
+## 1.2.0 (2026-11-05)
 
 Redline can now collect feedback from testers on a deployed build, not only from your own machine. Local mode is still the default and works as before.
 
