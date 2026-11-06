@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.1 (unreleased)
+## 1.3.1 (2026-11-06)
 
 Fixes from The Freelancer Tool's upgrade to 1.3.0 and its privacy pass.
 
