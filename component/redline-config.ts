@@ -35,12 +35,15 @@ export const DEFAULT_PHI_SELECTOR = '[data-phi]'
  * feedback box is a textarea too, but Redline's UI is never captured.
  */
 export const DEFAULT_MASKS = [
-  'input[type="email"]',
-  'input[type="tel"]',
+  'input[type="email" i]',
+  'input[type="tel" i]',
+  'input[autocomplete~="email" i]',
+  'input[autocomplete~="tel" i]',
   'textarea',
-  '[contenteditable]:not([contenteditable="false"])',
-  'a[href^="mailto:"]',
-  'a[href^="tel:"]',
+  '[contenteditable]:not([contenteditable="false" i])',
+  'a[href^="mailto:" i]',
+  'a[href^="tel:" i]',
+  'a[href^="sms:" i]',
 ]
 export const DEFAULT_RETENTION_DAYS = 30
 export const DEFAULT_BUCKET = 'redline-screenshots'

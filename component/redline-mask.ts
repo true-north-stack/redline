@@ -88,11 +88,20 @@ function descend(scope: ShadowRoot | Document, selector: string, contextual: boo
   collect(scope, selector, contextual, out)
 }
 
-/** closest() that climbs out of shadow roots and iframes. */
+/**
+ * closest() along the rendered tree: through the slot an element is shown in, then out
+ * of shadow roots and iframes. A name slotted into a masked part of a component is
+ * masked, even though its light-tree parents aren't.
+ */
 function insideMasked(el: Element, selector: string): boolean {
   let node: Element | null = el
   while (node) {
-    if (node.closest(selector)) return true
+    if (node.matches(selector)) return true
+    const next: Element | null = node.assignedSlot ?? node.parentElement
+    if (next) {
+      node = next
+      continue
+    }
     const root = node.getRootNode()
     node = isShadowRoot(root) ? root.host : (node.ownerDocument.defaultView?.frameElement ?? null)
   }
@@ -164,11 +173,11 @@ export async function captureMasked(
     }
   })
   const redacted = new Set<number>()
-  const scrolled = scrolledInside(root)
+  const shifts = scrollShifts(root)
 
   // Mark the live elements so their clones can be recognized; the clone keeps attributes
   targets.forEach((t, i) => t.el.setAttribute(MARK, String(i)))
-  scrolled.forEach((s, i) => s.el.setAttribute(SCROLL, String(i)))
+  shifts.forEach((s, i) => s.el.setAttribute(SCROLL, String(i)))
   try {
     const canvas = await domToCanvas(root, {
       backgroundColor: backgroundBehind(root),
@@ -195,8 +204,8 @@ export async function captureMasked(
         const at = el.getAttribute(SCROLL)
         if (at !== null) {
           el.removeAttribute(SCROLL)
-          const s = scrolled[Number(at)]
-          if (s) shiftChildren(el, s.left, s.top)
+          const s = shifts[Number(at)]
+          if (s) applyShift(el, s)
         }
         const idx = el.getAttribute(MARK)
         if (idx === null) return
@@ -212,39 +221,83 @@ export async function captureMasked(
     return canvas
   } finally {
     targets.forEach((t) => t.el.removeAttribute(MARK))
-    scrolled.forEach((s) => s.el.removeAttribute(SCROLL))
+    shifts.forEach((s) => s.el.removeAttribute(SCROLL))
   }
 }
 
-interface Scrolled {
+/** How one copied element is moved to match its live scroll position. */
+interface Shift {
+  /** The live element; its copy carries the SCROLL mark */
   el: Element
-  left: number
-  top: number
+  /** A scroller in normal flow: open its copy with a spacer pulling the content this far up */
+  spacer?: number
+  /** Move the copy by this much, in page space */
+  x?: number
+  y?: number
 }
 
 /**
- * Elements in root (root included) scrolled away from their top or left edge. The copy
- * the screenshot library draws always starts at scroll 0, so a drawer scrolled to its
- * lower half would be pictured from its top. The page's own scroll is left out: the
- * area crop already offsets the whole-page picture by it.
+ * What to move so scrolled containers in root (root included) are pictured where they
+ * are scrolled to. The copy the screenshot library draws always starts at scroll 0, so a
+ * drawer scrolled to its lower half would show its top. (The library's own
+ * restoreScrollPosition feature stays off: it also shifts the page's scroller, which the
+ * area crop already offsets by.)
+ *
+ * A block or flex-column scroller gets a spacer with a negative margin at the top of its
+ * copy, so text, sticky headers and everything in flow lands where the browser shows it.
+ * Other scrollers (grid, flex rows) and horizontal scroll move each child instead. Fixed
+ * children, and absolute ones placed against something outside the scroller, don't
+ * scroll in the browser, so they aren't moved.
  */
-function scrolledInside(root: Element): Scrolled[] {
+function scrollShifts(root: Element): Shift[] {
   const page = root.ownerDocument.scrollingElement
-  const out: Scrolled[] = []
-  for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
-    if (el === page || el.closest(REDLINE_UI)) continue
-    if (el.scrollTop || el.scrollLeft) out.push({ el, left: el.scrollLeft, top: el.scrollTop })
+  const shifts = new Map<Element, Shift>()
+  const entry = (el: Element) => {
+    let s = shifts.get(el)
+    if (!s) shifts.set(el, (s = { el }))
+    return s
   }
-  return out
+  for (const scroller of [root, ...Array.from(root.querySelectorAll('*'))]) {
+    const top = scroller.scrollTop
+    const left = scroller.scrollLeft
+    if ((!top && !left) || scroller === page || scroller.closest(REDLINE_UI)) continue
+    const cs = getComputedStyle(scroller)
+    const flex = /flex$/.test(cs.display)
+    const flow = /^(block|flow-root|list-item)$/.test(cs.display) || (flex && cs.flexDirection === 'column')
+    // In a flex column the gap after the spacer would push the content back down
+    if (top && flow) entry(scroller).spacer = top + (flex ? parseFloat(cs.rowGap) || 0 : 0)
+    for (const child of Array.from(scroller.children)) {
+      const position = getComputedStyle(child).position
+      if (position === 'fixed' || position === 'sticky') continue
+      let y = flow ? 0 : top
+      if (position === 'absolute') {
+        if (!(child instanceof HTMLElement) || child.offsetParent !== scroller) continue
+        y = top // out of flow, so the spacer doesn't carry it
+      }
+      if (!left && !y) continue
+      const s = entry(child)
+      s.x = (s.x ?? 0) - left
+      s.y = (s.y ?? 0) - y
+    }
+  }
+  return Array.from(shifts.values())
 }
 
-/** Move a scrolled container's copied children by its scroll offset, as the browser does. */
-function shiftChildren(el: HTMLElement, left: number, top: number) {
-  for (const child of Array.from(el.children) as HTMLElement[]) {
-    if (!child.style) continue
-    // Translate in page space ahead of the child's own transform (rotate, scale…)
-    const own = child.style.transform && child.style.transform !== 'none' ? child.style.transform : ''
-    child.style.setProperty('transform', `translate(${-left}px, ${-top}px) ${own}`.trim(), 'important')
+function applyShift(el: HTMLElement, s: Shift) {
+  if (s.spacer) {
+    const spacer = el.ownerDocument.createElement('div')
+    spacer.style.cssText = `display:block;flex:none;height:0;padding:0;border:0;margin:-${s.spacer}px 0 0 0`
+    el.prepend(spacer)
+  }
+  if (!s.x && !s.y) return
+  // The translate property applies outside rotate, scale and transform, so the move stays
+  // in page space. If the element already uses it, go ahead of its transform instead.
+  const style = el.style
+  if (!style.translate || style.translate === 'none') {
+    style.setProperty('translate', `${s.x ?? 0}px ${s.y ?? 0}px`, 'important')
+  } else {
+    const own = style.transform && style.transform !== 'none' ? style.transform : ''
+    style.setProperty('transform', `translate(${s.x ?? 0}px, ${s.y ?? 0}px) ${own}`.trim(), 'important')
   }
 }
 
@@ -282,38 +335,55 @@ const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|tabl
 /**
  * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
  * Separate boxes stay separate: a label over a value is two lines, not one run-on word,
- * so "$5,786.50" over "5 invoices" never reads as "$5,786.505". Hidden elements are
- * left out, whitespace is collapsed, and the result is cut to maxLength last.
+ * so "$5,786.50" over "5 invoices" never reads as "$5,786.505". Hidden elements and
+ * Redline's own UI are left out, whitespace is collapsed (line breaks kept where the page
+ * keeps them, as in pre), and the walk stops once there is more than maxLength to keep.
  */
 export function redactedText(el: HTMLElement, selectors: string[], maxLength: number): string | null {
-  const targets = new Set(findTargets(el, selectors).map((t) => t.mark))
-  if (targets.has(el)) return REDACTED
+  const targets = findTargets(el, selectors).map((t) => t.mark)
+  if (targets.includes(el)) return REDACTED
+  // Light-tree nodes shown through a slot inside a masked part of a component are masked
+  // too: the walk reaches them as children of the host, not of the masked part
+  const masked = new Set<Node>(targets)
+  for (const t of targets) {
+    const slots = t.localName === 'slot' ? [t] : Array.from(t.querySelectorAll('slot'))
+    for (const slot of slots) (slot as HTMLSlotElement).assignedNodes({ flatten: true }).forEach((n) => masked.add(n))
+  }
 
   let out = ''
-  const walk = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      out += (node as Text).data.replace(/\s+/g, ' ')
-      return
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return
-    const child = node as Element
-    if (targets.has(child)) {
+  let visible = 0 // characters that survive collapsing, so the walk knows when it has enough
+  const walk = (node: Node, keepBreaks: boolean): boolean => {
+    if (visible > maxLength) return false
+    if (masked.has(node)) {
       out += ` ${REDACTED} `
-      return
+      visible += REDACTED.length
+      return true
     }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const data = (node as Text).data
+      out += keepBreaks ? data.replace(/[^\S\n]+/g, ' ') : data.replace(/\s+/g, ' ')
+      visible += data.replace(/\s+/g, '').length
+      return true
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return true
+    const child = node as Element
     if (child.localName === 'br') {
       out += '\n'
-      return
+      return true
     }
-    const display = child === el ? 'block' : getComputedStyle(child).display
-    if (display === 'none' || child.localName === 'script' || child.localName === 'style') return
+    if (child.localName === 'script' || child.localName === 'style' || child.matches(REDLINE_UI)) return true
+    const style = child === el ? null : getComputedStyle(child)
+    const display = style?.display ?? 'block'
+    if (display === 'none') return true
     const breaks = BLOCK_DISPLAY.test(display)
     const spaced = SPACED_DISPLAY.test(display)
+    const keep = style ? /^(pre|break-spaces)/.test(style.whiteSpace) : keepBreaks
     out += breaks ? '\n' : spaced ? ' ' : ''
-    child.childNodes.forEach(walk)
+    for (const c of Array.from(child.childNodes)) if (!walk(c, keep)) return false
     out += breaks ? '\n' : spaced ? ' ' : ''
+    return true
   }
-  walk(el)
+  walk(el, /^(pre|break-spaces)/.test(getComputedStyle(el).whiteSpace))
 
   const text = out
     .split('\n')
