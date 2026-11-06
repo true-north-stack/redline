@@ -2,7 +2,7 @@
 // them against every project. These checks pin the parts that broke existing installs.
 
 import { test, expect } from '@playwright/test'
-import { readFile, access } from 'fs/promises'
+import { readFile, access, readdir } from 'fs/promises'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -38,6 +38,15 @@ test('update compares every installed component with the new release, never a fi
   for (const f of files) {
     expect(text, `update.md compares ${f}`).toContain(f)
     await access(join(repo, 'component', f))
+  }
+  // Every copy-in file ships: all of component/ except the route templates is in both lists
+  const shipped = (await readdir(join(repo, 'component'))).filter((f) => !f.endsWith('-example.ts'))
+  const loop = /for f in ([^;]*); do/.exec(text)
+  expect(loop, 'update.md has the comparison loop').not.toBeNull()
+  const looped = loop![1].trim().split(/\s+/)
+  for (const f of shipped) {
+    expect(files, `AGENT-INSTALLATION step 6 lists ${f}`).toContain(f)
+    expect(looped, `update.md loop compares ${f}`).toContain(f)
   }
   expect(text).toContain('re-run the install prompt from AGENT-INSTALLATION.md')
   expect(text).toContain('redline-config.ts')

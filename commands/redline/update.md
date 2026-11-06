@@ -96,7 +96,7 @@ Check whether this project's Redline files differ from the new release. Run this
 ```bash
 COMPONENTS="$(dirname "$(find . -name redline-inspector.tsx -not -path '*/node_modules/*' -print -quit)")"
 CHANGED=""
-for f in redline-sidebar.tsx redline-inspector.tsx redline-mask.ts redline-config.ts redline-storage.ts redline-handlers.ts redline-admin-handlers.ts redline-admin-types.ts redline-admin-inbox.tsx redline-admin-detail.tsx; do
+for f in redline-sidebar.tsx redline-inspector.tsx redline-intro.tsx redline-touch.ts redline-shortcuts.ts redline-mask.ts redline-config.ts redline-storage.ts redline-handlers.ts redline-admin-handlers.ts redline-admin-types.ts redline-admin-inbox.tsx redline-admin-detail.tsx; do
   # A file missing from the project counts as changed: the new release needs it
   cmp -s "$COMPONENTS/$f" "/tmp/redline/component/$f" || CHANGED="$CHANGED $f"
 done
@@ -130,7 +130,7 @@ If the check listed any changed or missing files, add:
 ```
 Redline's project files changed upstream: <the list from the check>.
 To update them, re-run the install prompt from AGENT-INSTALLATION.md in this project.
-Don't copy redline-inspector.tsx on its own: the new inspector imports redline-config.ts
-and redline-mask.ts, so copying it alone breaks the build. The install prompt copies the
+Don't copy redline-inspector.tsx on its own: the new inspector imports redline-config.ts,
+redline-mask.ts, redline-intro.tsx, redline-touch.ts and redline-shortcuts.ts, so copying it alone breaks the build. The install prompt copies the
 full set and keeps local mode working.
 ```

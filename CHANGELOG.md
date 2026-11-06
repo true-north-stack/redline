@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0 (unreleased)
+
+Redline now works with a finger, and tells people how to use it the first time.
+
+- **First-run introduction.** The first time someone turns Redline on in a browser, a short introduction explains how to pick an element or a region and what happens to the feedback. "Don't show this again" is remembered in `localStorage` under `redline:intro:v1`, and if storage is blocked the introduction simply shows again next time. `?` reopens it, from the desktop pill and from the touch bar.
+- **Touch capture.** A tap stages a pick instead of acting on it, and a bottom bar shows its name with Smaller, Bigger, Comment and Cancel. Smaller and Bigger walk the pick through the elements around the tap, so a small control inside a card is reachable. Area mode works by finger: draw a box, drag its corner handles, then Comment. Done turns Redline off. A dock button moves the bar to the top, so an app's own bottom navigation can be picked. Tapping Redline's own bar never reaches the page, and a tapped link is staged rather than followed. A mouse used after a touch brings back the desktop pill and hover outline.
+- **Tester wording.** A new `audience` prop on the inspector, `'tester'` or `'developer'` (default `'developer'`). Testers get a "What's wrong here?" box with no selector, no UX review option and no keyboard hints, and the element screenshot is on by default with a preview. Developers see the box as before.
+- **Shortcuts ship with Redline.** `useRedlineShortcuts(onActivate, { enabled })` in `redline-shortcuts.ts` handles the triple-tap keys (r or u for element, e for area, within 500ms). It ignores typing fields and modifier keys, and stands down while a Redline dialog is open. A new `shortcuts` prop on the inspector (default `true`) controls whether the introduction mentions the keys.
+- **Ctrl+Enter** submits the feedback box, as Cmd+Enter already did.
+- **Captures leave out Redline's own UI.** The bar, outlines and dialogs no longer appear in screenshots.
+
+### Upgrading from 1.2.x
+
+Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md). The new inspector imports `redline-intro.tsx`, `redline-touch.ts` and `redline-shortcuts.ts`, so copying the inspector on its own breaks the build. Pass `audience={redlineConfig.storage === 'supabase' ? 'tester' : 'developer'}` wherever the inspector renders, so testers get the plain wording. If your app already has its own r, u and e key listener, keep it. If its keys differ, pass `shortcuts={false}`. Otherwise call `useRedlineShortcuts(activate)` where the inspector's on/off state lives. Nothing else changes, and local mode works as before.
+
 ## 1.2.1 (2026-11-05)
 
 Fixes from the first host to run 1.2.0 end to end, The Freelancer Tool.

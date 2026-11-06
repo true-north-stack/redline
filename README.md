@@ -25,7 +25,18 @@ Leave as many redlines as you want. Fix them all at once.
 | `Esc` | Cancel/exit | Cancel selection, close modal, or deactivate inspector |
 | `Cmd+Enter` | Submit | Submit feedback from the modal |
 
-All triple-tap shortcuts work the same way — tap three times within 500ms. They won't trigger while typing in inputs or textareas.
+All triple-tap shortcuts work the same way — tap three times within 500ms. They won't trigger while typing in inputs or textareas, or with a modifier key held, and they stand down while a Redline dialog is open. `Ctrl+Enter` submits as well as `Cmd+Enter`.
+
+The listener ships with Redline as a hook. Call it where the inspector's on/off state lives:
+
+```tsx
+import { useRedlineShortcuts } from '@/components/redline-shortcuts'
+
+useRedlineShortcuts((mode) => { setMode(mode); setActive(true) })  // mode is 'element' or 'area'
+// Pass { enabled: false } as a second argument to switch it off
+```
+
+If your app already has its own listener, keep it and pass `shortcuts={false}` to the inspector when its keys differ from r, u and e.
 
 ## Two Capture Modes
 
@@ -48,6 +59,22 @@ Click and drag to capture any rectangular region of the page. A red overlay high
 - Tiny drags (< 20px) are ignored to prevent accidental captures
 
 A mode indicator pill at the top of the screen shows which mode is active. Press **`s`** to toggle between modes while the inspector is open.
+
+## On phones
+
+Redline works with a finger. With the inspector on, there is no hover, so a tap stages a pick instead of selecting it. The bar at the bottom shows the picked element's name:
+
+- **Smaller** and **Bigger** move the pick to a smaller or larger element around the tap.
+- **Comment** opens the feedback box for the pick. **Cancel** drops it.
+- **Area** lets you draw a box with your finger. Drag its corner handles to adjust, then tap Comment.
+- **Done** turns Redline off.
+- The dock button moves the bar to the top of the screen, so you can pick the app's own bottom navigation.
+
+Tapping a link while the inspector is on stages the link instead of following it. A mouse on a touchscreen laptop still gets the desktop pill and hover outline.
+
+## First-run introduction
+
+The first time someone turns Redline on in a browser, a short introduction explains how to pick something and what happens next. Tick "Don't show this again" and it stays away; the choice lives in `localStorage` under `redline:intro:v1`, and if storage is blocked it shows again next time. Press `?` to reopen it, from the desktop pill or the touch bar.
 
 ## Features
 
@@ -87,6 +114,8 @@ Is it pitch ready? Will SJ fire us? What questions will he ask? What gaps will h
   apiUrl="/api/redlines"     // API endpoint for submitting feedback (default: /api/redlines)
   initialMode="element"      // Starting mode: 'element' or 'area' (default: element)
   phiSelectors={redlineConfig.phiSelectors} // Extra selectors to mask, on top of [data-phi]
+  audience="developer"       // 'tester' or 'developer' (default developer). Testers get plain wording: no selector, no UX review, screenshot on by default
+  shortcuts={true}           // Whether the introduction mentions the r/u/e keys (default true). Pass false if your own listener uses other keys
 />
 ```
 
