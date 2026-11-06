@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.1 (unreleased)
+
+Fixes from The Freelancer Tool's upgrade to 1.3.0 and its privacy pass.
+
+- **`pull` no longer deletes local history.** It removed every local item past retention, and gave items saved before 1.2.0, which have no `expires_at`, a 30-day life from `created_at`. So the first `pull` after a host added `.env.redline` deleted most of the owner's own notes and their screenshots, and `/redline check` runs `pull` on its own. `pull` now removes only items it pulled. Plain `purge` keeps items with no `expires_at` and says how many it kept; `purge --days N` still removes anything older than N days.
+- **Element text reads as it does on screen.** Captured text ran separate boxes together, so a card showing "$5,786.50" over "5 invoices" was saved as "$5,786.505 invoices", a wrong number. Blocks and rows are now separate lines, side-by-side chips and table cells are separated by a space, `[redacted]` stands on its own, and hidden elements are left out. The inbox shows the lines.
+- **Screenshots of scrolled panels show what is on screen.** An area drawn over a drawer scrolled to its lower half pictured the drawer's top. Inner scroll positions are now kept in the picture. Picking a fixed or absolutely positioned element, such as a drawer itself, no longer comes out blank.
+- **Common personal-data fields are masked by default.** Email and phone inputs, text areas, editable text and `mailto:`/`tel:` links are blacked out without tagging. A new `maskDefaults` option (config and inspector prop, default `true`) turns this off.
+- **Line breaks are stored the same way** whether a note came with a screenshot or not.
+- **Save errors no longer say "your".** "That note is too long", "Shorten the note", "Couldn't save the feedback".
+
+### Upgrading from 1.3.0
+
+Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md) to pick up the changed components and `redline/redline.mjs`, and pass `maskDefaults={redlineConfig.maskDefaults}` next to `phiSelectors` wherever the inspector renders (leaving it out keeps the defaults on). No migration. Screenshots will now black out text areas and email and phone fields; if yours hold nothing private, set `maskDefaults: false` in `redline.config.ts`. If you removed `.env.redline` to protect local history, it is safe to put back once `redline/redline.mjs` is updated.
+
 ## 1.3.0 (2026-11-06)
 
 Redline now works with a finger, and tells people how to use it the first time.

@@ -83,7 +83,7 @@ The first time someone turns Redline on in a browser, a short introduction expla
 - **Screenshot preview** — area captures show a preview in the feedback modal before submit
 - **Request UX Audit** — opt-in 55-point audit including the Steve Jobs Pitch
 - **Flat file by default** — `redline/feedback.json`. Opt into Supabase for remote testers
-- **PHI masking** — `[data-phi]` and your own selectors are blacked out before anything leaves the browser
+- **PHI masking** — `[data-phi]`, email and phone fields, text areas, editable text, mailto/tel links and your own selectors are blacked out before anything leaves the browser
 - **Retention** — feedback and screenshots expire after 30 days (configurable)
 - **Batch fix** — 10 redlines? One command
 - **`initialMode` prop** — launch the inspector directly into area mode programmatically
@@ -113,7 +113,8 @@ Is it pitch ready? Will SJ fire us? What questions will he ask? What gaps will h
   onDeactivate={() => void}  // Called when the inspector should close
   apiUrl="/api/redlines"     // API endpoint for submitting feedback (default: /api/redlines)
   initialMode="element"      // Starting mode: 'element' or 'area' (default: element)
-  phiSelectors={redlineConfig.phiSelectors} // Extra selectors to mask, on top of [data-phi]
+  phiSelectors={redlineConfig.phiSelectors} // Extra selectors to mask, on top of [data-phi] and the defaults
+  maskDefaults={redlineConfig.maskDefaults} // Mask email/phone fields, text areas, editable text and mailto/tel links (default true)
   audience="developer"       // 'tester' or 'developer' (default developer). Testers get plain wording: no selector, no UX review, screenshot on by default
   shortcuts={true}           // Whether the introduction mentions the r/u/e keys (default true). Pass false if your own listener uses other keys
 />
@@ -133,7 +134,8 @@ export default defineRedlineConfig({
     secretKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
     bucket: 'redline-screenshots',
   },
-  phiSelectors: ['.client-name'],   // masked in addition to [data-phi]
+  phiSelectors: ['.client-name'],   // masked in addition to [data-phi] and the defaults
+  maskDefaults: true,               // email/phone fields, text areas, editable text, mailto/tel links (default true)
   retentionDays: 30,                // feedback + screenshots expire after this
   appVersion: process.env.NEXT_PUBLIC_APP_VERSION,
 })
@@ -143,14 +145,15 @@ Every redline saves `page_url`, `element_selector`, `element_text`, `feedback`, 
 
 ## PHI Masking
 
-Before a screenshot or element text is captured, every element matching `[data-phi]` or one of `phiSelectors` is replaced. Screenshots get a solid black box of the same size, and captured text gets `[redacted]`. This happens in the browser, so unmasked content never reaches the network or disk. If masking fails for any reason (a bad selector, say), the screenshot and element text are dropped instead of being sent.
+Before a screenshot or element text is captured, every element matching `[data-phi]`, one of the defaults below, or one of `phiSelectors` is replaced. Screenshots get a solid black box of the same size, and captured text gets `[redacted]`. This happens in the browser, so unmasked content never reaches the network or disk. If masking fails for any reason (a bad selector, say), the screenshot and element text are dropped instead of being sent.
 
 ```tsx
 <span data-phi>{client.name}</span>
 ```
 
 - Page URLs keep the path and query keys only: `/clients?q=Jane` is saved as `/clients?q=…`, and token fragments such as `#access_token=…` are dropped. The server re-sanitizes too.
-- Masking only covers elements you tag. Tag anything that can show patient or personal data before testers see it.
+- Without any tagging, Redline masks the places that hold personal data on almost every app: `input[type="email"]`, `input[type="tel"]`, `textarea`, editable text (`[contenteditable]`), and `mailto:` and `tel:` links. Set `maskDefaults: false` only if nothing in those places is private. Redline's own feedback box is never captured, so it isn't affected.
+- Beyond those, masking only covers elements you tag. Tag anything else that can show patient or personal data before testers see it, such as names in headings, toasts or table cells (`phiSelectors: ['[data-sonner-toast]']` covers Sonner toasts, for instance).
 - The feedback text is whatever the tester types. The modal reminds them not to type patient details, but Redline can't mask it.
 - Masking reaches into open shadow roots and same-origin iframes, nested ones included. Closed shadow roots and cross-origin iframes aren't rendered in screenshots at all.
 - Selectors with combinators (`.card .name`, `:host`) can't be evaluated across those boundaries, so on a page with shadow or iframe content they drop the screenshot instead of guessing. Tag the element itself (`data-phi`, or a plain class) to keep screenshots.
@@ -159,11 +162,11 @@ Before a screenshot or element text is captured, every element matching `[data-p
 
 ### Local (default)
 
-`redline/feedback.json` plus `redline/screenshots/`, written by your API route. Local storage never runs a purge on its own (in remote mode, `pull` does); to enforce retention, run:
+`redline/feedback.json` plus `redline/screenshots/`, written by your API route. Local storage never runs a purge on its own, and `pull` never removes an item created on this machine. To enforce retention, run:
 
 ```bash
 node redline/redline.mjs purge            # delete items past their expires_at, plus screenshots
-node redline/redline.mjs purge --days 7   # or anything older than 7 days
+node redline/redline.mjs purge --days 7   # or anything older than 7 days, dated or not
 ```
 
 Keep local mode out of deployed environments: it writes to the server's filesystem without authentication.
@@ -248,7 +251,7 @@ The dev machine never holds the service-role key. The CLI talks only to the `red
 
 Sync rules: `pull` takes the remote copy unless you changed the status locally and the remote hasn't moved, in which case your change waits for `push`. If both changed, the inbox wins, and `pull` lists each local change it discarded by id and page. `push` is a conditional update, so if the inbox changed in the meantime it does nothing for that item and tells you to run `pull`. Items created locally are never pushed.
 
-Retention reaches the dev machine too. Every `pull` deletes local items whose `expires_at` has passed and pulled items the inbox no longer has (purged or deleted there), along with their screenshots, and prints one line saying how many it removed. If one of them had a local status change you hadn't pushed, that line names it.
+Retention reaches the dev machine for pulled items. Every `pull` deletes pulled items whose `expires_at` has passed or that the inbox no longer has (purged, deleted, or sent back to To Review there), along with their screenshots, and prints one line saying how many it removed. If one of them had a local status change you hadn't pushed, that line names it. Items created on this machine are never touched by `pull`, however old. Items saved before 1.2.0 have no `expires_at`, so plain `purge` keeps them too and says how many it kept; `purge --days N` removes them by age.
 
 ## Admin inbox
 
