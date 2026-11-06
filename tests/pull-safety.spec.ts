@@ -115,8 +115,10 @@ test('items pulled from one remote are neither removed nor pushed when pulling f
     expect(r.out).not.toContain('Removed')
     expect((await local(root)).map((x) => x.id)).toEqual(expect.arrayContaining([...fromStaging, prod.rows[0].id]))
 
-    expect((await cli(root, ['push'], prod.url)).code).toBe(0)
+    const toProd = await cli(root, ['push'], prod.url)
+    expect(toProd.code).toBe(0)
     expect(prod.pushed).toEqual([])
+    expect(toProd.out).toContain(`Not sent: 1 status change on redlines pulled from ${new URL(staging.url).host}.`)
     expect((await cli(root, ['push'], staging.url)).code).toBe(0)
     expect(staging.pushed).toEqual([fromStaging[0]])
   } finally {
@@ -167,6 +169,35 @@ test('a pulled item missing from a non-empty list is removed', async () => {
     const r = await cli(root, ['pull'], remote.url)
     expect(r.out).toContain('Removed 1 redline no longer here to fix')
     expect((await local(root)).map((x) => x.id)).not.toContain(gone.id)
+  } finally {
+    await remote.close()
+  }
+})
+
+test('the same inbox reached under another host name is adopted, so syncing carries on', async () => {
+  const remote = await inbox([row(), row()])
+  try {
+    const root = await project()
+    expect((await cli(root, ['pull'], remote.url)).code).toBe(0)
+    const items = await local(root)
+    items[0].status = 'fixed'
+    await writeFile(join(root, 'redline', 'feedback.json'), JSON.stringify(items))
+
+    // Same server, another address for it
+    const alias = remote.url.replace('127.0.0.1', 'localhost')
+    const early = await cli(root, ['push'], alias)
+    expect(early.out).toContain('Not sent: 1 status change')
+    expect(remote.pushed).toEqual([])
+
+    const r = await cli(root, ['pull'], alias)
+    expect(r.code).toBe(0)
+    expect(r.out).not.toContain('Removed')
+    const adopted = await local(root)
+    expect(adopted.every((x) => x.remote_host === new URL(alias).host)).toBe(true)
+    expect(adopted[0].status).toBe('fixed') // the unpushed change waits for push
+
+    expect((await cli(root, ['push'], alias)).code).toBe(0)
+    expect(remote.pushed).toEqual([items[0].id])
   } finally {
     await remote.close()
   }

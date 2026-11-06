@@ -217,7 +217,10 @@ async function pull() {
       added++
       continue
     }
-    if (!fromRemote(local, remote)) continue
+    // Listed here, so it's the same inbox row even if it was pulled through another host
+    // name (a custom domain, a proxy): it is adopted, and synced rewrites its remote_host
+    if (local.source !== 'remote') continue
+    local.remote_host = remote.host
     const untouched = local.status === local.remote_status
     const remoteMoved = local.remote_status_updated_at !== r.status_updated_at
     if (!untouched && !remoteMoved) continue // unpushed local change, remote unchanged: push will send it
@@ -261,6 +264,7 @@ async function push() {
   const items = await readItems()
   let pushed = 0
   let conflicts = 0
+  const elsewhere = items.filter((r) => r.source === 'remote' && !fromRemote(r, remote) && r.status !== r.remote_status)
   try {
     for (const r of items) {
       if (!fromRemote(r, remote) || r.status === r.remote_status) continue
@@ -287,6 +291,10 @@ async function push() {
     if (items.length) await writeItems(items)
   }
   console.log(`Pushed ${pushed} status change${pushed === 1 ? '' : 's'}${conflicts ? `, ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}.`)
+  if (elsewhere.length) {
+    const hosts = [...new Set(elsewhere.map((r) => r.remote_host))].join(', ')
+    console.log(`Not sent: ${elsewhere.length} status change${elsewhere.length === 1 ? '' : 's'} on redlines pulled from ${hosts}. Run pull first if that is this same inbox under another address.`)
+  }
 }
 
 const commands = { purge, mode, pull, push }

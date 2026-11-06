@@ -14,7 +14,7 @@ Fixes from The Freelancer Tool's upgrade to 1.3.0 and its privacy pass.
 
 ### Upgrading from 1.3.0
 
-Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md) to pick up the changed components and `redline/redline.mjs`, and pass `maskDefaults={redlineConfig.maskDefaults}` next to `phiSelectors` wherever the inspector renders (leaving it out keeps the defaults on). No migration. Screenshots will now black out text areas and email and phone fields; if yours hold nothing private, set `maskDefaults: false` in `redline.config.ts`. If you removed `.env.redline` to protect local history, it is safe to put back once `redline/redline.mjs` is updated.
+Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md) to pick up the changed components and `redline/redline.mjs`, and pass `maskDefaults={redlineConfig.maskDefaults}` next to `phiSelectors` wherever the inspector renders (leaving it out keeps the defaults on). No migration. Screenshots will now black out text areas and email and phone fields; if yours hold nothing private, set `maskDefaults: false` in `redline.config.ts`. If you removed `.env.redline` to protect local history, it is safe to put back once `redline/redline.mjs` is updated. Items pulled before 1.3.1 don't record which remote they came from, so they count as the current one's: make your first pull after upgrading against the same `REDLINE_REMOTE_URL` you pulled them from, and from then on switching remotes is safe. Reaching the same inbox under a new address (a custom domain, a proxy) is fine: the first pull recognizes its rows and carries on, and until then `push` says how many changes it held back.
 
 ## 1.3.0 (2026-11-06)
 
