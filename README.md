@@ -152,10 +152,10 @@ Before a screenshot or element text is captured, every element matching `[data-p
 ```
 
 - Page URLs keep the path and query keys only: `/clients?q=Jane` is saved as `/clients?q=…`, and token fragments such as `#access_token=…` are dropped. The server re-sanitizes too.
-- Without any tagging, Redline masks the places that hold personal data on almost every app: `input[type="email"]`, `input[type="tel"]`, `textarea`, editable text (`[contenteditable]`), and `mailto:` and `tel:` links. Set `maskDefaults: false` only if nothing in those places is private. Redline's own feedback box is never captured, so it isn't affected.
+- Without any tagging, Redline masks the places that hold personal data on almost every app: email and phone inputs (`type="email"`, `type="tel"`, or `autocomplete` set to `email` or `tel`), `textarea`, editable text (`[contenteditable]`), and `mailto:`, `tel:` and `sms:` links. Set `maskDefaults: false` only if nothing in those places is private. Redline's own feedback box is never captured, so it isn't affected.
 - Beyond those, masking only covers elements you tag. Tag anything else that can show patient or personal data before testers see it, such as names in headings, toasts or table cells (`phiSelectors: ['[data-sonner-toast]']` covers Sonner toasts, for instance).
 - The feedback text is whatever the tester types. The modal reminds them not to type patient details, but Redline can't mask it.
-- Masking reaches into open shadow roots and same-origin iframes, nested ones included. Closed shadow roots and cross-origin iframes aren't rendered in screenshots at all.
+- Masking reaches into open shadow roots and same-origin iframes, nested ones included. Content passed into a masked part of a component through a `<slot>` is masked with it. Closed shadow roots and cross-origin iframes aren't rendered in screenshots at all.
 - Selectors with combinators (`.card .name`, `:host`) can't be evaluated across those boundaries, so on a page with shadow or iframe content they drop the screenshot instead of guessing. Tag the element itself (`data-phi`, or a plain class) to keep screenshots.
 
 ## Storage
@@ -251,7 +251,7 @@ The dev machine never holds the service-role key. The CLI talks only to the `red
 
 Sync rules: `pull` takes the remote copy unless you changed the status locally and the remote hasn't moved, in which case your change waits for `push`. If both changed, the inbox wins, and `pull` lists each local change it discarded by id and page. `push` is a conditional update, so if the inbox changed in the meantime it does nothing for that item and tells you to run `pull`. Items created locally are never pushed.
 
-Retention reaches the dev machine for pulled items. Every `pull` deletes pulled items whose `expires_at` has passed or that the inbox no longer has (purged, deleted, or sent back to To Review there), along with their screenshots, and prints one line saying how many it removed. If one of them had a local status change you hadn't pushed, that line names it. Items created on this machine are never touched by `pull`, however old. Items saved before 1.2.0 have no `expires_at`, so plain `purge` keeps them too and says how many it kept; `purge --days N` removes them by age.
+Retention reaches the dev machine for pulled items. Every `pull` deletes pulled items whose `expires_at` has passed or that the inbox no longer has (purged, deleted, or sent back to To Review there), along with their screenshots, and prints one line saying how many it removed. If one of them had a local status change you hadn't pushed, that line names it. Items created on this machine are never touched by `pull`, however old, and neither are items pulled from a different remote: each pulled item records the host it came from, and `pull` and `push` only act on the current one's. If the inbox lists nothing at all while pulled items here haven't expired, `pull` keeps them and says so, since a remote answering wrongly is likelier than an inbox emptied by hand. Items saved before 1.2.0 have no `expires_at`, so plain `purge` keeps them too and says how many it kept; `purge --days N` removes them by age.
 
 ## Admin inbox
 
