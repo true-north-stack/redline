@@ -145,3 +145,60 @@ test('a cancelled area drag resets and captures nothing', async ({ page }) => {
   await expect(page.getByText('Area Screenshot')).toBeVisible()
   await expect(page.locator('[data-redline-ui][style*="9999px"]')).toHaveCount(0)
 })
+
+test.describe('Esc in the feedback box closes it as Cancel does', () => {
+  const closedByHost = (page: Page) => page.evaluate(() => (window as any).__redlineClosed === true)
+
+  async function pickSave(page: Page) {
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x, y)
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeVisible()
+    await expect(feedbackBox(page)).toBeFocused()
+  }
+
+  test('with focus in the note', async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await feedbackBox(page).fill('Half a thought')
+    await page.keyboard.press('Escape')
+    await expect(feedbackBox(page)).toBeHidden()
+    await expect(page.getByText('Select Element')).toBeVisible()
+    expect(await closedByHost(page)).toBe(false)
+    // As Cancel: the next pick starts with an empty note
+    await pickSave(page)
+    await expect(feedbackBox(page)).toHaveValue('')
+  })
+
+  test('with focus on Include Screenshot', async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    const shot = page.getByLabel('Include Screenshot')
+    await shot.check()
+    await expect(shot).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(feedbackBox(page)).toBeHidden()
+    await expect(page.getByText('Select Element')).toBeVisible()
+    expect(await closedByHost(page)).toBe(false)
+    // As Cancel: the next pick starts unticked
+    await pickSave(page)
+    await expect(page.getByLabel('Include Screenshot')).not.toBeChecked()
+  })
+
+  test('for an area, with focus in the note', async ({ page }) => {
+    await open(page)
+    await page.keyboard.press('s')
+    await expect(page.getByText('Area Screenshot')).toBeVisible()
+    await page.mouse.move(200, 200)
+    await page.mouse.down()
+    await page.mouse.move(300, 280, { steps: 3 })
+    await page.mouse.up()
+    await expect(page.getByText('Area Feedback')).toBeVisible()
+    await expect(feedbackBox(page)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.getByText('Area Feedback')).toBeHidden()
+    await expect(page.getByText('Area Screenshot')).toBeVisible()
+    await expect(page.locator('[data-redline-ui][style*="9999px"]')).toHaveCount(0)
+    expect(await closedByHost(page)).toBe(false)
+  })
+})

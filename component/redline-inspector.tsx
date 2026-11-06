@@ -790,27 +790,29 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
   }, [selectedEl, areaComplete, masksKey, tester])
 
+  // Close the feedback box and throw the note away: Cancel, ×, the backdrop and Esc
+  const closeFeedback = useCallback(() => {
+    setSelectedEl(null)
+    setAreaComplete(false)
+    setAreaRect(null)
+    setFeedback('')
+    setIncludeScreenshot(false)
+    screenshotCanvasRef.current = null
+  }, [])
+
   // Keyboard: Escape to cancel, 's' to toggle mode
   useEffect(() => {
     if (!active) return
     function handleKey(e: KeyboardEvent) {
       // The introduction has the keyboard while it's open; its own Esc never reaches here
       if (introOpen) return
-      // Don't intercept keys when typing in the feedback textarea
+      // Don't intercept keys when typing in the feedback textarea; the box handles its own Esc
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'TEXTAREA' || tag === 'INPUT') return
 
       if (e.key === 'Escape') {
-        if (areaComplete) {
-          // Cancel area feedback
-          setAreaComplete(false)
-          setAreaRect(null)
-          setFeedback('')
-          setIncludeScreenshot(false)
-          screenshotCanvasRef.current = null
-        } else if (selectedEl) {
-          setSelectedEl(null)
-          setFeedback('')
+        if (areaComplete || selectedEl) {
+          closeFeedback()
         } else if (dragging) {
           resetAreaDrag()
         } else if (areaDraft && !capturingDraft) {
@@ -836,7 +838,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [active, introOpen, selectedEl, areaComplete, dragging, areaDraft, capturingDraft, staged, showingFeedback, onDeactivate, resetAreaDrag])
+  }, [active, introOpen, selectedEl, areaComplete, dragging, areaDraft, capturingDraft, staged, showingFeedback, onDeactivate, resetAreaDrag, closeFeedback])
 
   // The bar's Element / Area switch
   const chooseMode = useCallback((next: InspectorMode) => {
@@ -1489,13 +1491,14 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             const onBackdrop = backdropPressRef.current && backdropReleaseRef.current
             backdropPressRef.current = false
             backdropReleaseRef.current = false
-            if (onBackdrop && e.target === e.currentTarget) {
-              setSelectedEl(null)
-              setAreaComplete(false)
-              setAreaRect(null)
-              setFeedback('')
-              setIncludeScreenshot(false)
-            }
+            if (onBackdrop && e.target === e.currentTarget) closeFeedback()
+          }}
+          // Esc from the note or a checkbox closes the box as Cancel does. Stopped here, so
+          // the inspector's own Esc doesn't also run and turn Redline off.
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
+            e.stopPropagation()
+            closeFeedback()
           }}
         >
           <div
@@ -1522,13 +1525,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               <button
                 data-redline-ui
                 aria-label="Close"
-                onClick={() => {
-                  setSelectedEl(null)
-                  setAreaComplete(false)
-                  setAreaRect(null)
-                  setFeedback('')
-                  setIncludeScreenshot(false)
-                }}
+                onClick={closeFeedback}
                 style={{
                   color: '#666',
                   fontSize: 18,
@@ -1719,13 +1716,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: touchUi ? 10 : 8, marginTop: 12 }}>
               <button
                 data-redline-ui
-                onClick={() => {
-                  setSelectedEl(null)
-                  setAreaComplete(false)
-                  setAreaRect(null)
-                  setFeedback('')
-                  setIncludeScreenshot(false)
-                }}
+                onClick={closeFeedback}
                 style={{
                   padding: '6px 14px',
                   fontSize: 12,
