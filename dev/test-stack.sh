@@ -62,7 +62,9 @@ if supabase status >/dev/null 2>&1 && [ "$CFG_CHANGED" = 1 ]; then
 elif supabase status >/dev/null 2>&1; then
   supabase db reset
 else
+  # A stopped stack keeps its old database, so start alone would skip new migrations
   supabase start
+  supabase db reset
 fi
 
 # Secrets: generated once, reused after.
