@@ -104,6 +104,7 @@ const shellHtml = (props: object) => `<!doctype html><html><head><meta charset="
   <div id="grid"><div class="red"></div><div class="blue"></div></div>
   <div id="wide"><table><tr><td class="pin"></td><td class="red"></td><td class="blue"></td></tr></table></div>
   <div id="neg"><div class="red"></div><div class="blue"></div></div>
+  <div id="tabs" style="position: absolute; left: 0; top: 660px; width: 300px; height: 30px; display: flex; justify-content: center; overflow-x: auto;"><div style="flex: none; width: 200px; background: #ff0000;"></div><div style="flex: none; width: 200px; background: #00ff00;"></div><div style="flex: none; width: 200px; background: #0000ff;"></div></div>
   <div id="redline-root"></div>
   <script>window.__REDLINE_PROPS__ = ${JSON.stringify(props)}</script>
   <script>${'${bundle}'}</script>
@@ -361,4 +362,16 @@ test('a first child with a negative top margin is pictured where it is', async (
   expect(shot.red).toBeGreaterThan(0.25)
   expect(shot.red).toBeLessThan(0.42)
   expect(shot.blue).toBeGreaterThan(0.55)
+})
+
+test('an overflowing centered flex row scrolled sideways is pictured where it is', async ({ page }) => {
+  const posts = await open(page, { initialMode: 'area' }, shellHtml)
+  await page.locator('#tabs').evaluate((el) => { el.scrollLeft = 100 })
+  const want = await colors(page, await page.locator('#tabs').screenshot())
+  await drawArea(page, 1, 661, 299, 689)
+  const shot = await colors(page, await shotOf(await send(page, posts)))
+  // The copy may draw a classic scrollbar where the live page overlays one, so compare
+  // where green gives way to blue rather than raw shares
+  expect(shot.red).toBe(0)
+  expect(shot.green / (shot.green + shot.blue)).toBeCloseTo(want.green / (want.green + want.blue), 1)
 })

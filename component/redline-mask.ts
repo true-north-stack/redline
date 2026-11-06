@@ -275,9 +275,11 @@ function scrollShifts(root: Element): Shift[] {
     const column = flex && cs.flexDirection === 'column'
     const row = flex && cs.flexDirection === 'row'
     const block = /^(block|flow-root|list-item)$/.test(cs.display)
-    // A flex gap after the spacer would push the content back
-    if (top && (block || column)) entry(scroller).spacerTop = top + (column ? parseFloat(cs.rowGap) || 0 : 0)
-    if (left && row) entry(scroller).spacerLeft = left + (parseFloat(cs.columnGap) || 0)
+    // A flex gap after the spacer would push the content back. Centered flex content that
+    // overflows spills over both ends, so a spacer there only moves it half as far.
+    const twice = flex && cs.justifyContent === 'center' ? 2 : 1
+    if (top && (block || column)) entry(scroller).spacerTop = top * (column ? twice : 1) + (column ? parseFloat(cs.rowGap) || 0 : 0)
+    if (left && row) entry(scroller).spacerLeft = left * twice + (parseFloat(cs.columnGap) || 0)
     // What the spacer doesn't carry, each child has to move itself
     const across = { x: row ? 0 : left, y: block || column ? 0 : top }
     for (const child of Array.from(scroller.children)) {
