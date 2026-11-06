@@ -369,10 +369,10 @@ function redactClone(el: HTMLElement, t: Target) {
 }
 
 // Boxes that start a new line in what the reader sees. Flex and grid items are reported
-// blockified by getComputedStyle, so a row of spans in a flex container counts too.
-const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)\b/
+// blockified by getComputedStyle, so their parent decides instead (see Row below).
+const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|-webkit-box|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)( |$)/
 // Side-by-side boxes that still need a gap between them
-const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)\b/
+const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)( |$)/
 
 /**
  * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
@@ -394,10 +394,12 @@ export function redactedText(el: HTMLElement, selectors: string[], maxLength: nu
 
   let out = ''
   let visible = 0 // characters that survive collapsing, so the walk knows when it has enough
-  const walk = (node: Node, keepBreaks: boolean): boolean => {
+  const walk = (node: Node, keepBreaks: boolean, row: Row | null = null): boolean => {
     if (visible > maxLength) return false
     if (masked.has(node)) {
-      out += ` ${REDACTED} `
+      // A masked item still takes its place in a row, so the next item reads beside it
+      const onNewRow = row && node.nodeType === Node.ELEMENT_NODE && !row.sameLine(node as Element)
+      out += `${onNewRow ? '\n' : ' '}${REDACTED} `
       visible += REDACTED.length
       return true
     }
@@ -417,12 +419,26 @@ export function redactedText(el: HTMLElement, selectors: string[], maxLength: nu
     const style = child === el ? null : getComputedStyle(child)
     const display = style?.display ?? 'block'
     if (display === 'none') return true
-    const breaks = BLOCK_DISPLAY.test(display)
-    const spaced = SPACED_DISPLAY.test(display)
     const keep = style ? /^(pre|break-spaces)/.test(style.whiteSpace) : keepBreaks
-    out += breaks ? '\n' : spaced ? ' ' : ''
-    for (const c of Array.from(child.childNodes)) if (!walk(c, keep)) return false
-    out += breaks ? '\n' : spaced ? ' ' : ''
+    // display: contents leaves no box: its children belong to the row this element is in
+    if (display === 'contents') {
+      for (const c of Array.from(child.childNodes)) if (!walk(c, keep, row)) return false
+      return true
+    }
+    // An item of a flex row or grid sits beside the one before it unless it starts a new
+    // row on screen; anything else follows its own display. An out-of-flow item (a badge, sr-only
+    // text) reads beside its neighbours and doesn't count as the previous item.
+    const outOfFlow = !!style && (style.position === 'absolute' || style.position === 'fixed')
+    const before = row
+      ? outOfFlow || row.sameLine(child) ? ' ' : '\n'
+      : BLOCK_DISPLAY.test(display) ? '\n' : SPACED_DISPLAY.test(display) ? ' ' : ''
+    const after = row ? ' ' : before
+    // The picked element itself counts as a block for its own separators, but a row
+    // or grid that is picked directly still reads its items as one
+    const inner = rowOf(child, style ?? getComputedStyle(child))
+    out += before
+    for (const c of Array.from(child.childNodes)) if (!walk(c, keep, inner)) return false
+    out += after
     return true
   }
   walk(el, /^(pre|break-spaces)/.test(getComputedStyle(el).whiteSpace))
@@ -433,6 +449,33 @@ export function redactedText(el: HTMLElement, selectors: string[], maxLength: nu
     .filter(Boolean)
     .join('\n')
   return cut(text, maxLength) || null
+}
+
+/** The items of one flex row or grid, read left to right and row by row. */
+interface Row {
+  /** Whether this item sits on the same line as the item before it */
+  sameLine(item: Element): boolean
+}
+
+/**
+ * A flex row or grid's own reading of its items, or null for any other container. A
+ * single-line flex row is one line, whatever its items are. A wrapping row or a grid
+ * starts a new line where an item no longer overlaps the previous one vertically.
+ */
+function rowOf(el: Element, style: CSSStyleDeclaration): Row | null {
+  const flex = /flex$/.test(style.display)
+  if (flex && !style.flexDirection.startsWith('row')) return null
+  if (!flex && !/grid$/.test(style.display)) return null
+  if (flex && style.flexWrap === 'nowrap') return { sameLine: () => true }
+  let last: DOMRect | null = null
+  return {
+    sameLine(item) {
+      const box = item.getBoundingClientRect()
+      const same = !!last && box.top < last.bottom - 1 && box.bottom > last.top + 1
+      last = box
+      return same
+    },
+  }
 }
 
 /** At most max UTF-16 units, never splitting an emoji or other surrogate pair. */
