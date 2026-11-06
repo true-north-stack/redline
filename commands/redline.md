@@ -29,7 +29,7 @@ Masked content appears as `[redacted]` in `element_text` and as black boxes in s
 
 Run `node redline/redline.mjs mode` to see whether this project syncs with a remote inbox (`remote <host>`) or is local-only (`local`). Remote mode is set by `.env.redline` in the project root; `check` and `fix` pull first, and `fix` and `defer` push after. If `redline/redline.mjs` doesn't exist, the project predates remote sync: treat it as local mode and suggest re-running the install prompt from AGENT-INSTALLATION.md.
 
-Pulled entries also carry `source`, `remote_status` and `remote_status_updated_at`. Never edit `source`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
+Pulled entries also carry `source`, `remote_host`, `remote_status` and `remote_status_updated_at`. Never edit `source`, `remote_host`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
 
 Screenshots are stored in `redline/screenshots/` in the project root. When a redline has a screenshot, `screenshot_path` points to it (e.g., `redline/screenshots/{id}.png`). Read the screenshot when fixing to understand the visual context.
 

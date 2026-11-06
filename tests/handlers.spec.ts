@@ -324,3 +324,17 @@ test('limits: cutting collected text never leaves half an emoji', async () => {
   expect(text).toBe('a'.repeat(1999))
   expect(() => encodeURIComponent(text)).not.toThrow()
 })
+
+test('line breaks are stored as LF whether the body was multipart (CRLF) or JSON', async () => {
+  const store = memoryStore()
+  const h = createFeedbackHandlers({ config: { storage: 'supabase' }, store, getTesterId: async () => 't1' })
+  const form = new FormData()
+  form.set('page_url', '/x')
+  form.set('feedback', 'Total is wrong\r\nShould be $5,786.50')
+  form.set('element_text', 'Unpaid\r\n$5,786.50\r\n5 invoices')
+  expect((await h.POST(new Request('http://x/api/redlines', { method: 'POST', body: form }))).status).toBe(201)
+  expect((await h.POST(post({ ...payload, feedback: 'a\nb', element_text: 'Unpaid\n$5,786.50' }))).status).toBe(201)
+  expect(store.items[0].feedback).toBe('Total is wrong\nShould be $5,786.50')
+  expect(store.items[0].element_text).toBe('Unpaid\n$5,786.50\n5 invoices')
+  expect(store.items[1].element_text).toBe('Unpaid\n$5,786.50')
+})

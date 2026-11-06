@@ -152,6 +152,13 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
       return Response.json({ error: 'invalid field', field: 'screenshot' }, { status: 400 })
     }
 
+    // A multipart body carries every line break as CRLF, a JSON body as LF. Store LF either
+    // way, so the same note reads and counts the same whether or not a screenshot came with it.
+    for (const field of ['feedback', 'element_text'] as const) {
+      const value = fields[field]
+      if (typeof value === 'string') fields[field] = value.replace(/\r\n?/g, '\n')
+    }
+
     if (typeof fields.feedback !== 'string' || !fields.feedback.trim()) {
       return Response.json({ error: 'feedback is required' }, { status: 400 })
     }

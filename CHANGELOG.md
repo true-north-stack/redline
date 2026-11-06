@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.1 (unreleased)
+
+Fixes from The Freelancer Tool's upgrade to 1.3.0 and its privacy pass.
+
+- **`pull` no longer deletes local history.** It removed every local item past retention, and gave items saved before 1.2.0, which have no `expires_at`, a 30-day life from `created_at`. So the first `pull` after a host added `.env.redline` deleted most of the owner's own notes and their screenshots, and `/redline check` runs `pull` on its own. `pull` now removes only items it pulled, and only from the remote it is talking to: pulled items record `remote_host`, so pointing `.env.redline` at another project no longer deletes what came from the old one, and `push` sends nothing to the wrong project. An empty inbox list next to pulled items that haven't expired is treated as a bad answer, and the items are kept. Plain `purge` keeps items with no `expires_at` and says how many it kept; `purge --days N` still removes anything older than N days.
+- **Element text reads as it does on screen.** Captured text ran separate boxes together, so a card showing "$5,786.50" over "5 invoices" was saved as "$5,786.505 invoices", a wrong number. Blocks and rows are now separate lines, side-by-side chips and table cells are separated by a space, `[redacted]` stands on its own, `pre` keeps its line breaks, and hidden elements are left out. The inbox shows the lines.
+- **Screenshots of scrolled panels show what is on screen.** An area drawn over a drawer scrolled to its lower half pictured the drawer's top. Inner scroll positions are now kept in the picture, with sticky headers and columns, pinned badges and fixed buttons where the browser shows them. One case is left: a code block or line of plain text scrolled sideways still shows its left edge, since text has no box to move. Picking a fixed or absolutely positioned element, such as a drawer itself, no longer comes out blank.
+- **A name passed into a masked component through a slot is masked.** A component like `<x-field>` whose shadow template wraps its `<slot>` in `data-phi` masked its own box but not the slotted text when that text was picked directly, and the host's element text included it. Both are masked now. This was true before 1.3.1 as well.
+- **Common personal-data fields are masked by default.** Email and phone inputs (by `type` or `autocomplete`), text areas, editable text and `mailto:`, `tel:` and `sms:` links are blacked out without tagging. A new `maskDefaults` option (config and inspector prop, default `true`) turns this off.
+- **Line breaks are stored the same way** whether a note came with a screenshot or not.
+- **Save errors no longer say "your".** "That note is too long", "Shorten the note", "Couldn't save the feedback".
+
+### Upgrading from 1.3.0
+
+Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md) to pick up the changed components and `redline/redline.mjs`, and pass `maskDefaults={redlineConfig.maskDefaults}` next to `phiSelectors` wherever the inspector renders (leaving it out keeps the defaults on). No migration. Screenshots will now black out text areas and email and phone fields; if yours hold nothing private, set `maskDefaults: false` in `redline.config.ts`. If you removed `.env.redline` to protect local history, it is safe to put back once `redline/redline.mjs` is updated. Items pulled before 1.3.1 don't record which remote they came from, so they count as the current one's: make your first pull after upgrading against the same `REDLINE_REMOTE_URL` you pulled them from, and from then on switching remotes is safe. Reaching the same inbox under a new address (a custom domain, a proxy) is fine: the first pull recognizes its rows and carries on, and until then `push` says how many changes it held back.
+
 ## 1.3.0 (2026-11-06)
 
 Redline now works with a finger, and tells people how to use it the first time.

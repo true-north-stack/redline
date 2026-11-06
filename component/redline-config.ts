@@ -14,8 +14,13 @@ export interface RedlineConfig {
     /** Private bucket for screenshots. Default: redline-screenshots */
     bucket?: string
   }
-  /** Extra CSS selectors to mask, on top of [data-phi]. */
+  /** Extra CSS selectors to mask, on top of [data-phi] and the defaults. */
   phiSelectors?: string[]
+  /**
+   * Mask the fields and links that usually hold personal data (DEFAULT_MASKS) without
+   * tagging them. Default: true. Turn off only if nothing in those places is private.
+   */
+  maskDefaults?: boolean
   /** Days to keep feedback and screenshots. Default: 30 */
   retentionDays?: number
   /** Saved on every item, e.g. process.env.NEXT_PUBLIC_APP_VERSION */
@@ -23,6 +28,23 @@ export interface RedlineConfig {
 }
 
 export const DEFAULT_PHI_SELECTOR = '[data-phi]'
+
+/**
+ * Masked unless maskDefaults is false: places that hold personal data on almost every
+ * app, typed or shown, whether or not anyone remembered to tag them. Redline's own
+ * feedback box is a textarea too, but Redline's UI is never captured.
+ */
+export const DEFAULT_MASKS = [
+  'input[type="email" i]',
+  'input[type="tel" i]',
+  'input[autocomplete~="email" i]',
+  'input[autocomplete~="tel" i]',
+  'textarea',
+  '[contenteditable]:not([contenteditable="false" i])',
+  'a[href^="mailto:" i]',
+  'a[href^="tel:" i]',
+  'a[href^="sms:" i]',
+]
 export const DEFAULT_RETENTION_DAYS = 30
 export const DEFAULT_BUCKET = 'redline-screenshots'
 
@@ -55,9 +77,9 @@ export function defineRedlineConfig(config: RedlineConfig): RedlineConfig {
   return config
 }
 
-/** Every selector to mask: [data-phi] plus the host's extras. */
-export function maskSelectors(extra: string[] = []): string[] {
-  return [DEFAULT_PHI_SELECTOR, ...extra.filter((s) => s.trim())]
+/** Every selector to mask: [data-phi], the defaults unless turned off, and the host's extras. */
+export function maskSelectors(extra: string[] = [], defaults = true): string[] {
+  return [DEFAULT_PHI_SELECTOR, ...(defaults ? DEFAULT_MASKS : []), ...extra.filter((s) => s.trim())]
 }
 
 /**

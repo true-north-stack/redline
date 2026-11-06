@@ -39,11 +39,11 @@ function deletesIn(expiresAt: string): string {
   return days === 1 ? 'Deletes in 1 day' : `Deletes in ${days} days`
 }
 
-function Field({ label, value, mono }: { label: string; value: string | null | undefined; mono?: boolean }) {
+function Field({ label, value, mono, lines }: { label: string; value: string | null | undefined; mono?: boolean; lines?: boolean }) {
   return (
     <div className="min-w-0">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={`break-words text-sm text-foreground ${mono ? 'font-mono text-xs' : ''}`}>{value || '—'}</dd>
+      <dd className={`break-words text-sm text-foreground ${mono ? 'font-mono text-xs' : ''} ${lines ? 'whitespace-pre-line' : ''}`}>{value || '—'}</dd>
     </div>
   )
 }
@@ -327,7 +327,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
           </dd>
         </div>
         <Field label="Element" value={detail.element_selector} mono />
-        <Field label="Element text" value={detail.element_text} />
+        <Field label="Element text" value={detail.element_text} lines />
         <Field label="Tester" value={tester} />
         <Field label="Version" value={detail.app_version} />
         <div className="sm:col-span-2">

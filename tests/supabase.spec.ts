@@ -741,20 +741,40 @@ test('pull removes a pulled item the remote has purged, with its screenshot', as
   expect(await exists(shot)).toBe(false)
 })
 
-test('pull removes local items past expires_at and keeps unexpired local-only ones', async () => {
+test('pull never removes items created on this machine, however old, with or without expires_at', async () => {
   const root = await newRoot()
   await mkdir(join(root, 'redline', 'screenshots'), { recursive: true })
+  // The first pull after a host adds .env.redline meets years of local history: fixed,
+  // deferred and dismissed notes, some saved before expires_at existed
   const expired = item({ expires_at: new Date(Date.now() - DAY).toISOString(), screenshot_path: 'redline/screenshots/old.png' })
+  const { expires_at: _, ...undated } = item({ created_at: new Date(Date.now() - 400 * DAY).toISOString(), status: 'deferred' })
   const fresh = item()
   await writeFile(join(root, 'redline', 'screenshots', 'old.png'), 'x')
-  await writeFile(feedbackFile(root), JSON.stringify([expired, fresh]))
+  await writeFile(feedbackFile(root), JSON.stringify([expired, undated, fresh]))
   const r = cli(root, ['pull'], remoteEnv)
   expect(r.code).toBe(0)
-  expect(r.out).toContain('Removed 1 redline no longer here to fix (expired, purged, or sent back to To Review).')
+  expect(r.out).not.toContain('Removed')
   const ids = (await readLocal(root)).map((x) => x.id)
-  expect(ids).not.toContain(expired.id)
-  expect(ids).toContain(fresh.id)
-  expect(await exists(join(root, 'redline', 'screenshots', 'old.png'))).toBe(false)
+  expect(ids).toEqual(expect.arrayContaining([expired.id, undated.id, fresh.id]))
+  expect(await exists(join(root, 'redline', 'screenshots', 'old.png'))).toBe(true)
+})
+
+test('pull removes a pulled item once its expires_at passes', async () => {
+  const root = await newRoot()
+  const r0 = await saveWithScreenshot(item())
+  expect(cli(root, ['pull'], remoteEnv).code).toBe(0)
+  // Past retention in the inbox, not yet taken by the daily purge
+  const res = await fetch(`${URL_}/rest/v1/items?id=eq.${r0.id}`, {
+    method: 'PATCH',
+    headers: { ...restHeaders(SECRET), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expires_at: new Date(Date.now() - DAY).toISOString() }),
+  })
+  expect(res.ok).toBe(true)
+  const r = cli(root, ['pull'], remoteEnv)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('Removed 1 redline no longer here to fix')
+  expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
+  await deleteRemote(r0) // an expired row left behind would be counted by the purge test
 })
 
 test('pull names a removed item that had an unpushed local change', async () => {

@@ -4,10 +4,11 @@
 //   node redline/redline.mjs purge [--days N]   Delete local redlines past retention, plus their screenshots
 //   node redline/redline.mjs mode               Print `local`, or `remote <host>` when a remote is configured
 //   node redline/redline.mjs pull               Sync the inbox into redline/feedback.json (inbox wins on conflict),
-//                                               then remove expired items and pulled items the inbox no longer has
+//                                               then remove pulled items that expired or the inbox no longer has
 //   node redline/redline.mjs push               Send local status changes for pulled items to the inbox
 //
-// purge uses each item's expires_at; --days N instead deletes anything older than N days.
+// purge uses each item's expires_at and keeps items without one; --days N instead deletes
+// anything older than N days. pull never removes an item it didn't bring down.
 // pull and push talk to the redline-sync edge function, never to Supabase directly, so this
 // machine holds only a sync secret and no service-role key. Configure them with
 // REDLINE_REMOTE_URL and REDLINE_SYNC_SECRET, from the environment or a gitignored
@@ -20,7 +21,6 @@ import { readFile, writeFile, mkdir, unlink, rename } from 'fs/promises'
 import { join, resolve, sep } from 'path'
 import { execSync } from 'child_process'
 
-const DEFAULT_DAYS = 30
 const DAY_MS = 86_400_000
 
 function projectRoot() {
@@ -66,11 +66,10 @@ async function writeItems(items) {
   }
 }
 
-// Items saved before expires_at existed fall back to the 30-day default
+// Only an item with an expires_at can expire. Items saved before 1.2.0 have none: they are
+// the owner's own notes, kept until purge --days removes them on purpose.
 function isExpired(r, now) {
-  const created = new Date(r.created_at ?? 0).getTime()
-  const expires = r.expires_at ? new Date(r.expires_at).getTime() : created + DEFAULT_DAYS * DAY_MS
-  return expires <= now
+  return !!r.expires_at && new Date(r.expires_at).getTime() <= now
 }
 
 // Delete a local screenshot, but only inside redline/screenshots/. Returns true if removed.
@@ -106,6 +105,10 @@ async function purge() {
   for (const r of gone) if (await removeScreenshot(r.screenshot_path)) screenshots++
   if (gone.length) await writeItems(items.filter((r) => !expired(r)))
   console.log(`Purged ${gone.length} redline${gone.length === 1 ? '' : 's'} and ${screenshots} screenshot${screenshots === 1 ? '' : 's'}.`)
+  const undated = days === null ? items.filter((r) => !r.expires_at).length : 0
+  if (undated) {
+    console.log(`Kept ${undated} redline${undated === 1 ? '' : 's'} with no expiry date (saved before 1.2.0). To remove old ones, run purge --days N.`)
+  }
 }
 
 // Remote config: environment first, then a minimal KEY=VALUE parse of <root>/.env.redline
@@ -137,8 +140,12 @@ async function requireRemote() {
     throw new Error('REDLINE_REMOTE_URL is not a valid URL')
   }
   console.log(`Supabase: ${host}`)
-  return remote
+  return { ...remote, host }
 }
+
+// A pulled item belongs to the remote it came from. Items pulled before remote_host was
+// recorded can't say, so they count as the current remote's.
+const fromRemote = (r, remote) => r.source === 'remote' && (!r.remote_host || r.remote_host === remote.host)
 
 async function sync(remote, body) {
   const res = await fetch(`${remote.url}/functions/v1/redline-sync`, {
@@ -199,7 +206,7 @@ async function pull() {
   let updated = 0
   let discarded = 0
   for (const { screenshot_url, ...r } of json.items) {
-    const synced = { source: 'remote', remote_status: r.status, remote_status_updated_at: r.status_updated_at }
+    const synced = { source: 'remote', remote_host: remote.host, remote_status: r.status, remote_status_updated_at: r.status_updated_at }
     const local = byId.get(r.id)
     if (!local) {
       if (isExpired(r, now)) continue // past retention, awaiting the daily purge: never bring it down
@@ -210,7 +217,10 @@ async function pull() {
       added++
       continue
     }
+    // Listed here, so it's the same inbox row even if it was pulled through another host
+    // name (a custom domain, a proxy): it is adopted, and synced rewrites its remote_host
     if (local.source !== 'remote') continue
+    local.remote_host = remote.host
     const untouched = local.status === local.remote_status
     const remoteMoved = local.remote_status_updated_at !== r.status_updated_at
     if (!untouched && !remoteMoved) continue // unpushed local change, remote unchanged: push will send it
@@ -224,11 +234,17 @@ async function pull() {
     if (changed) updated++
   }
 
-  // Retention reaches this machine too. The list above is complete (the function pages
-  // through every approved row), so a pulled item missing from it was purged, deleted, or
-  // sent back to To Review in the inbox.
-  const removed = items.filter((r) => (r.source === 'remote' && !remoteIds.has(r.id)) || isExpired(r, now))
-  const changedLocally = removed.filter((r) => r.source === 'remote' && r.status !== r.remote_status).map((r) => r.id)
+  // Retention reaches this machine for items pulled from this remote only. The list above is
+  // complete (the function pages through every approved row), so a pulled item missing from
+  // it was purged, deleted, or sent back to To Review in the inbox. Items created on this
+  // machine, or pulled from another remote, are never removed here: that is purge's job,
+  // run on purpose. An empty list next to pulled items that haven't expired is more likely
+  // a remote that answered wrongly than an inbox emptied by hand, so nothing is pruned
+  // for being missing; those items still go once they expire.
+  const pulledHere = items.filter((r) => fromRemote(r, remote))
+  const trustList = json.items.length > 0 || pulledHere.every((r) => isExpired(r, now))
+  const removed = pulledHere.filter((r) => isExpired(r, now) || (trustList && !remoteIds.has(r.id)))
+  const changedLocally = removed.filter((r) => r.status !== r.remote_status).map((r) => r.id)
   for (const r of removed) await removeScreenshot(r.screenshot_path)
   const gone = new Set(removed)
   await writeItems(items.filter((r) => !gone.has(r)))
@@ -237,6 +253,10 @@ async function pull() {
     const note = changedLocally.length ? ` (including ${changedLocally.join(', ')}, changed locally)` : ''
     console.log(`Removed ${removed.length} redline${removed.length === 1 ? '' : 's'} no longer here to fix (expired, purged, or sent back to To Review)${note}.`)
   }
+  if (!trustList) {
+    const kept = pulledHere.length - removed.length
+    console.log(`The inbox listed nothing to fix, so ${kept} pulled redline${kept === 1 ? ' was' : 's were'} kept. They go when they expire, or when the inbox lists items again.`)
+  }
 }
 
 async function push() {
@@ -244,9 +264,10 @@ async function push() {
   const items = await readItems()
   let pushed = 0
   let conflicts = 0
+  const elsewhere = items.filter((r) => r.source === 'remote' && !fromRemote(r, remote) && r.status !== r.remote_status)
   try {
     for (const r of items) {
-      if (r.source !== 'remote' || r.status === r.remote_status) continue
+      if (!fromRemote(r, remote) || r.status === r.remote_status) continue
       const { status, json } = await sync(remote, {
         action: 'set_status',
         id: r.id,
@@ -270,6 +291,10 @@ async function push() {
     if (items.length) await writeItems(items)
   }
   console.log(`Pushed ${pushed} status change${pushed === 1 ? '' : 's'}${conflicts ? `, ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : ''}.`)
+  if (elsewhere.length) {
+    const hosts = [...new Set(elsewhere.map((r) => r.remote_host))].join(', ')
+    console.log(`Not sent: ${elsewhere.length} status change${elsewhere.length === 1 ? '' : 's'} on redlines pulled from ${hosts}. Run pull first if that is this same inbox under another address.`)
+  }
 }
 
 const commands = { purge, mode, pull, push }

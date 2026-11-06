@@ -58,20 +58,21 @@ test('local store writes the same feedback.json + screenshots layout as before',
   expect(await store.list()).toHaveLength(2)
 })
 
-test('local purge deletes expired items and their screenshots, keeps the rest', async () => {
+test('local purge deletes expired items and their screenshots, keeps the rest and undated ones', async () => {
   const root = await mkdtemp(join(tmpdir(), 'redline-'))
   const store = localStore(root)
   const old = item({ expires_at: new Date(Date.now() - DAY).toISOString() })
   old.screenshot_path = await store.saveAttachment(old.id, new Blob(['x'], { type: 'image/png' }))
   await store.saveItem(old)
-  // Saved before expires_at existed: falls back to created_at + 30 days
-  await store.saveItem({ ...item({ created_at: new Date(Date.now() - 31 * DAY).toISOString() }), expires_at: undefined as never })
+  // Saved before expires_at existed: an owner's older note, never purged automatically
+  const undated = { ...item({ created_at: new Date(Date.now() - 31 * DAY).toISOString() }), expires_at: undefined as never }
+  await store.saveItem(undated)
   const fresh = item()
   await store.saveItem(fresh)
 
-  expect(await store.purge()).toEqual({ items: 2, attachments: 1 })
+  expect(await store.purge()).toEqual({ items: 1, attachments: 1 })
   expect(await exists(join(root, old.screenshot_path))).toBe(false)
-  expect((await store.list()).map((r) => r.id)).toEqual([fresh.id])
+  expect((await store.list()).map((r) => r.id)).toEqual([undated.id, fresh.id])
 })
 
 test('mode prints local without remote config', async () => {
@@ -102,24 +103,26 @@ test('malformed feedback.json aborts pull, push and purge and is left byte-ident
   }
 })
 
-test('CLI purge: expires_at by default, --days overrides', async () => {
+test('CLI purge: expires_at by default and undated items kept, --days overrides', async () => {
   const root = await mkdtemp(join(tmpdir(), 'redline-'))
   await mkdir(join(root, 'redline', 'screenshots'), { recursive: true })
   const expired = item({ expires_at: new Date(Date.now() - DAY).toISOString(), screenshot_path: 'redline/screenshots/a.png' })
   const tenDaysOld = item({ created_at: new Date(Date.now() - 10 * DAY).toISOString() })
   const today = item()
+  // Saved before 1.2.0, so no expires_at: kept by purge, removed by --days like anything else
+  const { expires_at: _, ...undated } = item({ created_at: new Date(Date.now() - 90 * DAY).toISOString() })
   await writeFile(join(root, 'redline', 'screenshots', 'a.png'), 'x')
-  await writeFile(join(root, 'redline', 'feedback.json'), JSON.stringify([expired, tenDaysOld, today]))
+  await writeFile(join(root, 'redline', 'feedback.json'), JSON.stringify([expired, tenDaysOld, today, undated]))
 
   const run = (...args: string[]) =>
     execFileSync('node', [CLI, 'purge', ...args], { env: { ...process.env, REDLINE_ROOT: root }, encoding: 'utf-8' }).trim()
   const remaining = async () => JSON.parse(await readFile(join(root, 'redline', 'feedback.json'), 'utf-8')).map((r: RedlineItem) => r.id)
 
-  expect(run()).toBe('Purged 1 redline and 1 screenshot.')
-  expect(await remaining()).toEqual([tenDaysOld.id, today.id])
+  expect(run()).toBe('Purged 1 redline and 1 screenshot.\nKept 1 redline with no expiry date (saved before 1.2.0). To remove old ones, run purge --days N.')
+  expect(await remaining()).toEqual([tenDaysOld.id, today.id, undated.id])
   expect(await exists(join(root, 'redline', 'screenshots', 'a.png'))).toBe(false)
 
-  expect(run('--days', '7')).toBe('Purged 1 redline and 0 screenshots.')
+  expect(run('--days', '7')).toBe('Purged 2 redlines and 0 screenshots.')
   expect(await remaining()).toEqual([today.id])
 })
 

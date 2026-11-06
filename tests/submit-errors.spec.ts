@@ -44,7 +44,7 @@ async function send(page: Page, withScreenshot = false) {
 test('413 on the note says it is too long', async ({ page }) => {
   await openWith(page, 413, { error: 'too_large', field: 'feedback' })
   await send(page)
-  await expect(page.getByText('Your note is too long. Shorten it and try again.')).toBeVisible()
+  await expect(page.getByText('That note is too long. Shorten it and try again.')).toBeVisible()
 })
 
 test('413 with a screenshot attached says to untick it', async ({ page }) => {
@@ -56,7 +56,7 @@ test('413 with a screenshot attached says to untick it', async ({ page }) => {
 test('413 from a host that sends no JSON still gets a useful message', async ({ page }) => {
   await openWith(page, 413, null, 'Payload Too Large')
   await send(page)
-  await expect(page.getByText('Too large to send. Shorten your note and try again.')).toBeVisible()
+  await expect(page.getByText('Too large to send. Shorten the note and try again.')).toBeVisible()
 })
 
 test('429 says to wait, not to retry now', async ({ page }) => {
@@ -68,7 +68,7 @@ test('429 says to wait, not to retry now', async ({ page }) => {
 test('a server error keeps the retry message', async ({ page }) => {
   await openWith(page, 500, { error: 'Could not save redline' })
   await send(page)
-  await expect(page.getByText("Couldn't save your feedback (500). Try again.")).toBeVisible()
+  await expect(page.getByText("Couldn't save the feedback (500). Try again.")).toBeVisible()
 })
 
 test('the note box stops at 5000 characters', async ({ page }) => {

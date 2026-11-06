@@ -7,6 +7,7 @@
 // aren't rendered at all, so there's nothing in them to leak.
 
 const MARK = 'data-redline-mask'
+const SCROLL = 'data-redline-scroll'
 const REDACTED = '[redacted]'
 
 interface Target {
@@ -87,11 +88,20 @@ function descend(scope: ShadowRoot | Document, selector: string, contextual: boo
   collect(scope, selector, contextual, out)
 }
 
-/** closest() that climbs out of shadow roots and iframes. */
+/**
+ * closest() along the rendered tree: through the slot an element is shown in, then out
+ * of shadow roots and iframes. A name slotted into a masked part of a component is
+ * masked, even though its light-tree parents aren't.
+ */
 function insideMasked(el: Element, selector: string): boolean {
   let node: Element | null = el
   while (node) {
-    if (node.closest(selector)) return true
+    if (node.matches(selector)) return true
+    const next: Element | null = node.assignedSlot ?? node.parentElement
+    if (next) {
+      node = next
+      continue
+    }
     const root = node.getRootNode()
     node = isShadowRoot(root) ? root.host : (node.ownerDocument.defaultView?.frameElement ?? null)
   }
@@ -163,9 +173,11 @@ export async function captureMasked(
     }
   })
   const redacted = new Set<number>()
+  const shifts = scrollShifts(root)
 
   // Mark the live elements so their clones can be recognized; the clone keeps attributes
   targets.forEach((t, i) => t.el.setAttribute(MARK, String(i)))
+  shifts.forEach((s, i) => s.el.setAttribute(SCROLL, String(i)))
   try {
     const canvas = await domToCanvas(root, {
       backgroundColor: backgroundBehind(root),
@@ -173,13 +185,28 @@ export async function captureMasked(
       filter: (node) => node.nodeType !== Node.ELEMENT_NODE || !(node as Element).matches(REDLINE_UI),
       // modern-screenshot drops the root's own margins, and the copy it draws then
       // falls back to the browser's defaults for that tag (h1, p, ul…), pushing the
-      // content down and clipping it. Pin the root copy's margins to zero.
+      // content down and clipping it. Pin the root copy's margins to zero. A positioned
+      // root (a fixed drawer, an absolute card) keeps its left/top offsets in the copy and
+      // draws itself off the canvas, so it is pinned to the canvas origin too. It stays
+      // positioned, so its absolute children keep the same containing block.
       onCloneNode: (cloned) => {
-        if (cloned.nodeType === Node.ELEMENT_NODE) (cloned as HTMLElement).style.setProperty('margin', '0', 'important')
+        if (cloned.nodeType !== Node.ELEMENT_NODE) return
+        const s = (cloned as HTMLElement).style
+        s.setProperty('margin', '0', 'important')
+        if (root !== root.ownerDocument.documentElement && getComputedStyle(root).position !== 'static') {
+          s.setProperty('position', 'relative', 'important')
+          s.setProperty('inset', 'auto', 'important')
+        }
       },
       onCloneEachNode: (cloned) => {
         if (cloned.nodeType !== Node.ELEMENT_NODE) return
         const el = cloned as HTMLElement
+        const at = el.getAttribute(SCROLL)
+        if (at !== null) {
+          el.removeAttribute(SCROLL)
+          const s = shifts[Number(at)]
+          if (s) applyShift(el, s)
+        }
         const idx = el.getAttribute(MARK)
         if (idx === null) return
         const t = targets[Number(idx)]
@@ -194,7 +221,126 @@ export async function captureMasked(
     return canvas
   } finally {
     targets.forEach((t) => t.el.removeAttribute(MARK))
+    shifts.forEach((s) => s.el.removeAttribute(SCROLL))
   }
+}
+
+/** How one copied element is moved to match its live scroll position. */
+interface Shift {
+  /** The live element; its copy carries the SCROLL mark */
+  el: Element
+  /** Open the copy with a spacer pulling its content this far up (block, flex column) */
+  spacerTop?: number
+  /** Open the copy with a spacer pulling its content this far left (flex row) */
+  spacerLeft?: number
+  /** Replace the copy's margins with these, moving it without a transform */
+  margins?: Partial<Record<'top' | 'right' | 'bottom' | 'left', number>>
+  /** Move the copy by this much with translate, where margins can't do it */
+  x?: number
+  y?: number
+}
+
+/**
+ * What to move so scrolled containers in root (root included) are pictured where they
+ * are scrolled to. The copy the screenshot library draws always starts at scroll 0, so a
+ * drawer scrolled to its lower half would show its top. (The library's own
+ * restoreScrollPosition feature stays off: it also shifts the page's scroller, which the
+ * area crop already offsets by.)
+ *
+ * Content is moved by layout wherever it can be, never by transform, because a transform
+ * would make the moved element the reference for fixed and sticky parts inside it. Along
+ * the direction a container stacks its content (down for block and flex column, across
+ * for flex row), a spacer with a negative margin opens the copy and pulls everything after
+ * it, text included. Across the other direction, each block-level child is moved by its
+ * margins. Sticky parts then settle where the browser shows them, since the copy sits at
+ * scroll 0. Grid and reversed flex scrollers, inline-block children and absolute children
+ * placed against the scroller are moved with translate instead. Fixed and sticky children,
+ * and absolute ones placed against something outside the scroller, don't scroll, so they
+ * aren't moved.
+ */
+function scrollShifts(root: Element): Shift[] {
+  const page = root.ownerDocument.scrollingElement
+  const shifts = new Map<Element, Shift>()
+  const entry = (el: Element) => {
+    let s = shifts.get(el)
+    if (!s) shifts.set(el, (s = { el }))
+    return s
+  }
+  for (const scroller of [root, ...Array.from(root.querySelectorAll('*'))]) {
+    const top = scroller.scrollTop
+    const left = scroller.scrollLeft
+    if ((!top && !left) || scroller === page || scroller.closest(REDLINE_UI)) continue
+    const cs = getComputedStyle(scroller)
+    const flex = /flex$/.test(cs.display)
+    const column = flex && cs.flexDirection === 'column'
+    const row = flex && cs.flexDirection === 'row'
+    const block = /^(block|flow-root|list-item)$/.test(cs.display)
+    // A flex gap after the spacer would push the content back. Centered flex content that
+    // overflows spills over both ends, so a spacer there only moves it half as far.
+    const twice = flex && cs.justifyContent === 'center' ? 2 : 1
+    if (top && (block || column)) entry(scroller).spacerTop = top * (column ? twice : 1) + (column ? parseFloat(cs.rowGap) || 0 : 0)
+    if (left && row) entry(scroller).spacerLeft = left * twice + (parseFloat(cs.columnGap) || 0)
+    // What the spacer doesn't carry, each child has to move itself
+    const across = { x: row ? 0 : left, y: block || column ? 0 : top }
+    for (const child of Array.from(scroller.children)) {
+      const style = getComputedStyle(child)
+      const position = style.position
+      if (position === 'fixed' || position === 'sticky') continue
+      if (position === 'absolute') {
+        if (!(child instanceof HTMLElement) || child.offsetParent !== scroller) continue
+        const s = entry(child)
+        s.x = (s.x ?? 0) - left
+        s.y = (s.y ?? 0) - top
+        continue
+      }
+      if (!across.x && !across.y) continue
+      const s = entry(child)
+      if ((block || column || row) && !style.display.startsWith('inline')) {
+        const m = (s.margins ??= {})
+        if (across.x) {
+          m.left = parseFloat(style.marginLeft) - across.x
+          m.right = parseFloat(style.marginRight) + across.x // keeps an auto width the same
+        }
+        if (across.y) {
+          m.top = parseFloat(style.marginTop) - across.y
+          m.bottom = parseFloat(style.marginBottom) + across.y
+        }
+      } else {
+        s.x = (s.x ?? 0) - across.x
+        s.y = (s.y ?? 0) - across.y
+      }
+    }
+  }
+  return Array.from(shifts.values())
+}
+
+function applyShift(el: HTMLElement, s: Shift) {
+  const doc = el.ownerDocument
+  // A 1px spacer, so its margin can't collapse through it into a negative child margin
+  if (s.spacerTop) {
+    const spacer = doc.createElement('div')
+    spacer.style.cssText = `display:block;flex:none;height:1px;padding:0;border:0;margin:-${s.spacerTop + 1}px 0 0 0`
+    el.prepend(spacer)
+  }
+  if (s.spacerLeft) {
+    const spacer = doc.createElement('div')
+    spacer.style.cssText = `display:block;flex:none;width:1px;padding:0;border:0;margin:0 0 0 -${s.spacerLeft + 1}px`
+    el.prepend(spacer)
+  }
+  const style = el.style
+  for (const [side, px] of Object.entries(s.margins ?? {})) style.setProperty(`margin-${side}`, `${px}px`, 'important')
+  if (!s.x && !s.y) return
+  // translate applies outside rotate, scale and transform, so the move stays in page space.
+  // An existing translate is kept and added to; one written with calc() can't be split
+  // into its parts, so the move goes ahead of the transform instead.
+  const own = !style.translate || style.translate === 'none' ? '' : style.translate
+  if (own.includes('(')) {
+    const transform = style.transform && style.transform !== 'none' ? style.transform : ''
+    style.setProperty('transform', `translate(${s.x ?? 0}px, ${s.y ?? 0}px) ${transform}`.trim(), 'important')
+    return
+  }
+  const [x = '0px', y = '0px', z = ''] = own ? own.split(/\s+/) : []
+  style.setProperty('translate', `calc(${x} + ${s.x ?? 0}px) calc(${y} + ${s.y ?? 0}px) ${z}`.trim(), 'important')
 }
 
 function redactClone(el: HTMLElement, t: Target) {
@@ -222,18 +368,76 @@ function redactClone(el: HTMLElement, t: Target) {
   set('opacity', '1')
 }
 
-/** textContent of el with masked subtrees replaced by [redacted]. */
+// Boxes that start a new line in what the reader sees. Flex and grid items are reported
+// blockified by getComputedStyle, so a row of spans in a flex container counts too.
+const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)\b/
+// Side-by-side boxes that still need a gap between them
+const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)\b/
+
+/**
+ * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
+ * Separate boxes stay separate: a label over a value is two lines, not one run-on word,
+ * so "$5,786.50" over "5 invoices" never reads as "$5,786.505". Hidden elements and
+ * Redline's own UI are left out, whitespace is collapsed (line breaks kept where the page
+ * keeps them, as in pre), and the walk stops once there is more than maxLength to keep.
+ */
 export function redactedText(el: HTMLElement, selectors: string[], maxLength: number): string | null {
   const targets = findTargets(el, selectors).map((t) => t.mark)
   if (targets.includes(el)) return REDACTED
-
-  targets.forEach((t) => t.setAttribute(MARK, ''))
-  let clone: HTMLElement
-  try {
-    clone = el.cloneNode(true) as HTMLElement
-  } finally {
-    targets.forEach((t) => t.removeAttribute(MARK))
+  // Light-tree nodes shown through a slot inside a masked part of a component are masked
+  // too: the walk reaches them as children of the host, not of the masked part
+  const masked = new Set<Node>(targets)
+  for (const t of targets) {
+    const slots = t.localName === 'slot' ? [t] : Array.from(t.querySelectorAll('slot'))
+    for (const slot of slots) (slot as HTMLSlotElement).assignedNodes({ flatten: true }).forEach((n) => masked.add(n))
   }
-  clone.querySelectorAll(`[${MARK}]`).forEach((n) => n.replaceWith(REDACTED))
-  return clone.textContent?.slice(0, maxLength) || null
+
+  let out = ''
+  let visible = 0 // characters that survive collapsing, so the walk knows when it has enough
+  const walk = (node: Node, keepBreaks: boolean): boolean => {
+    if (visible > maxLength) return false
+    if (masked.has(node)) {
+      out += ` ${REDACTED} `
+      visible += REDACTED.length
+      return true
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const data = (node as Text).data
+      out += keepBreaks ? data.replace(/[^\S\n]+/g, ' ') : data.replace(/\s+/g, ' ')
+      visible += data.replace(/\s+/g, '').length
+      return true
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return true
+    const child = node as Element
+    if (child.localName === 'br') {
+      out += '\n'
+      return true
+    }
+    if (child.localName === 'script' || child.localName === 'style' || child.matches(REDLINE_UI)) return true
+    const style = child === el ? null : getComputedStyle(child)
+    const display = style?.display ?? 'block'
+    if (display === 'none') return true
+    const breaks = BLOCK_DISPLAY.test(display)
+    const spaced = SPACED_DISPLAY.test(display)
+    const keep = style ? /^(pre|break-spaces)/.test(style.whiteSpace) : keepBreaks
+    out += breaks ? '\n' : spaced ? ' ' : ''
+    for (const c of Array.from(child.childNodes)) if (!walk(c, keep)) return false
+    out += breaks ? '\n' : spaced ? ' ' : ''
+    return true
+  }
+  walk(el, /^(pre|break-spaces)/.test(getComputedStyle(el).whiteSpace))
+
+  const text = out
+    .split('\n')
+    .map((line) => line.replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
+  return cut(text, maxLength) || null
+}
+
+/** At most max UTF-16 units, never splitting an emoji or other surrogate pair. */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text
+  const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max
+  return text.slice(0, end)
 }

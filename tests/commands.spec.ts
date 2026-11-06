@@ -23,7 +23,7 @@ test('every command that syncs treats a missing redline/redline.mjs as local mod
 test('commands that write feedback.json say never to edit the sync fields', async () => {
   for (const p of ['commands/redline.md', 'commands/redline/fix.md', 'commands/redline/defer.md']) {
     const text = await read(p)
-    expect(text, p).toContain('Never edit `source`, `remote_status` or `remote_status_updated_at`')
+    expect(text, p).toContain('Never edit `source`, `remote_host`, `remote_status` or `remote_status_updated_at`')
   }
 })
 
