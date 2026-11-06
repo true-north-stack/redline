@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   bundle = result.outputFiles[0].text
 })
 
-const pageHtml = () => `<!doctype html><html><head><meta charset="utf-8"><style>
+const pageHtml = (props: object = {}) => `<!doctype html><html><head><meta charset="utf-8"><style>
   body { margin: 0; font: 16px sans-serif; background: #ffffff; }
   #card { margin: 100px 0 0 100px; width: 420px; padding: 24px; background: #dddddd; }
   #save { padding: 8px 16px; font-size: 16px; }
@@ -35,18 +35,19 @@ const pageHtml = () => `<!doctype html><html><head><meta charset="utf-8"><style>
     for (const type of ['pointerdown', 'mousedown', 'click']) {
       save.addEventListener(type, () => window.__hostEvents.push(type))
     }
-    window.__REDLINE_PROPS__ = {}
+    window.__REDLINE_PROPS__ = ${JSON.stringify(props)}
   </script>
   <script>${bundle}</script>
 </body></html>`
 
-async function open(page: Page) {
+async function open(page: Page, props: object = {}) {
   await page.route(`${ORIGIN}/**`, (route) =>
-    route.fulfill({ status: 200, contentType: 'text/html', body: pageHtml() }),
+    route.fulfill({ status: 200, contentType: 'text/html', body: pageHtml(props) }),
   )
   await page.goto(ORIGIN + '/x')
-  // The inspector mounts asynchronously; its key and pointer listeners are ready once the pill shows
-  await expect(page.getByText('Select Element')).toBeVisible()
+  // The inspector mounts asynchronously; its key and pointer listeners are ready once the pill
+  // shows (or the bar, where touch emulation makes the main pointer coarse)
+  await expect(page.getByText('Select Element').or(page.getByTestId('redline-touch-bar'))).toBeVisible()
 }
 
 const hostEvents = (page: Page) => page.evaluate(() => (window as any).__hostEvents as string[])
@@ -200,5 +201,60 @@ test.describe('Esc in the feedback box closes it as Cancel does', () => {
     await expect(page.getByText('Area Screenshot')).toBeVisible()
     await expect(page.locator('[data-redline-ui][style*="9999px"]')).toHaveCount(0)
     expect(await closedByHost(page)).toBe(false)
+  })
+})
+
+test.describe('a shortcut while Redline is on', () => {
+  async function pickSave(page: Page) {
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x, y)
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeFocused()
+  }
+
+  test('eee with the feedback box open changes nothing', async ({ page }) => {
+    await open(page, { withShortcuts: true })
+    await pickSave(page)
+    // A click on the box's own background takes focus out of the note
+    const title = page.getByText('Redline Feedback')
+    const t = (await title.boundingBox())!
+    await page.mouse.click(t.x + t.width + 40, t.y + t.height / 2)
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true)
+    await page.keyboard.type('eee')
+    await expect(feedbackBox(page)).toBeVisible()
+    await expect(page.locator('[data-redline-area-overlay]')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByText('Select Element')).toBeVisible()
+  })
+
+  test("the box is a named dialog, so the hook stands down", async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await expect(page.getByRole('dialog', { name: 'Redline Feedback' })).toContainText('Include Screenshot')
+  })
+
+  test("a host's own mode change with the box open changes nothing", async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await page.evaluate(() => (window as any).__redlineSetMode('area'))
+    await expect(feedbackBox(page)).toBeVisible()
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByText('Select Element')).toBeVisible()
+  })
+
+  test.describe('on a touchscreen laptop', () => {
+    test.use({ hasTouch: true })
+
+    test('a staged pick is dropped when eee switches to Area', async ({ page }) => {
+      await open(page, { withShortcuts: true })
+      const { x, y } = await center(page, '#save')
+      await page.touchscreen.tap(x, y)
+      const bar = page.getByTestId('redline-touch-bar')
+      await expect(bar.getByTestId('redline-pick-name')).toHaveText('Button: Save invoice')
+      await page.keyboard.type('eee')
+      await expect(bar.getByText('Drag to draw a box.')).toBeVisible()
+      await expect(bar.getByTestId('redline-pick-name')).toHaveCount(0)
+      await expect(bar.getByRole('button', { name: 'Area' })).toHaveAttribute('aria-pressed', 'true')
+    })
   })
 })

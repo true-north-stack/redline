@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useId, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
 import { LIMITS, maskSelectors, sanitizePageUrl } from './redline-config'
 import { captureMasked, redactedText } from './redline-mask'
 import { TAP_SLOP_PX, defaultPickIndex, describeElement, pickPath } from './redline-touch'
@@ -206,6 +206,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const screenshotCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Names the feedback box for assistive tech
+  const feedbackTitleId = useId()
   // The current press went down, and was let go, on the feedback box's backdrop itself;
   // and when the box last opened
   const backdropPressRef = useRef(false)
@@ -265,11 +267,22 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const [seen, setSeen] = useState({ active, initialMode })
   if (seen.active !== active || seen.initialMode !== initialMode) {
     setSeen({ active, initialMode })
-    if (active) {
+    if (active && !seen.active) {
       setMode(initialMode)
-      if (!seen.active) {
-        setTouchUi(coarsePointer())
-        setIntroOpen(!introDismissed())
+      setTouchUi(coarsePointer())
+      setIntroOpen(!introDismissed())
+    } else if (active) {
+      // A shortcut while on switches mode with the same fresh start as S and the bar's
+      // switch (the drag refs are cleared in an effect below), and, like S, does nothing
+      // while the feedback box is open or a drawn box is being captured
+      if (!selectedEl && !areaComplete && !capturingDraft) {
+        setMode(initialMode)
+        setDragging(false)
+        setAreaRect(null)
+        setAreaDraft(null)
+        setStaged(null)
+        setHoveredEl(null)
+        setMousePos(null)
       }
     } else {
       setMode('element')
@@ -297,6 +310,14 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       cornerDragRef.current = null
     }
   }, [active])
+
+  // A mode switch from outside drops any drag in progress, as resetAreaDrag does for S
+  useEffect(() => {
+    draggingRef.current = false
+    areaStartRef.current = null
+    areaPointerRef.current = null
+    cornerDragRef.current = null
+  }, [initialMode])
 
   // Selectors to mask; joined so effects only re-run when the list actually changes
   const masksKey = maskSelectors(phiSelectors).join('\n')
@@ -1503,6 +1524,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         >
           <div
             data-redline-ui
+            role="dialog"
+            aria-labelledby={feedbackTitleId}
             style={{
               backgroundColor: '#1a1a1a',
               border: '1px solid #333',
@@ -1519,7 +1542,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={tester ? { color: '#eee', fontSize: touchUi ? 18 : 15, fontWeight: 600 } : { color: '#ef4444', fontSize: 13, fontWeight: 600 }}>
+              <span id={feedbackTitleId} style={tester ? { color: '#eee', fontSize: touchUi ? 18 : 15, fontWeight: 600 } : { color: '#ef4444', fontSize: 13, fontWeight: 600 }}>
                 {tester ? "What's wrong here?" : areaComplete ? 'Area Feedback' : 'Redline Feedback'}
               </span>
               <button

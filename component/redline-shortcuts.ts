@@ -18,8 +18,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * While Redline's own dialog (the introduction) is open, keys belong to it, wherever focus
- * is: this listener runs in the capture phase, so the dialog can't stop keys reaching it.
+ * While one of Redline's own dialogs (the introduction or the feedback box) is open, keys
+ * belong to it, wherever focus is: this listener runs in the capture phase, so the dialog
+ * can't stop keys reaching it.
  */
 function redlineDialogOpen(): boolean {
   return !!document.querySelector('[role="dialog"][data-redline-ui]')
