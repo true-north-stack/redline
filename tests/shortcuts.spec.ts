@@ -116,3 +116,18 @@ test('Shift or Caps Lock (an uppercase key) still counts', async ({ page }) => {
   await page.keyboard.type('EEE')
   expect(await activations(page)).toEqual(['element', 'element', 'area'])
 })
+
+test('a keydown with no key (Chrome autofill) throws nothing, and rrr still works', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (err) => errors.push(err.message))
+  await load(page)
+  await page.evaluate(() => {
+    // Chrome autofill dispatches keydown events whose key is undefined
+    const e = new KeyboardEvent('keydown', { bubbles: true })
+    Object.defineProperty(e, 'key', { value: undefined })
+    document.dispatchEvent(e)
+  })
+  await page.keyboard.type('rrr')
+  expect(errors).toEqual([])
+  expect(await activations(page)).toEqual(['element'])
+})

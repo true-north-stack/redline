@@ -42,6 +42,8 @@ export function useRedlineShortcuts(
     let times: number[] = []
 
     function onKeyDown(e: KeyboardEvent) {
+      // Chrome autofill dispatches keydown events with no key
+      if (typeof e.key !== 'string') return
       // Shift held or Caps Lock on still counts: "R" is the same key as "r"
       if (e.key === 'Shift' || e.key === 'CapsLock') return
       const pressed = e.key.toLowerCase()
