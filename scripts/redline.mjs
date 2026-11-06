@@ -4,10 +4,11 @@
 //   node redline/redline.mjs purge [--days N]   Delete local redlines past retention, plus their screenshots
 //   node redline/redline.mjs mode               Print `local`, or `remote <host>` when a remote is configured
 //   node redline/redline.mjs pull               Sync the inbox into redline/feedback.json (inbox wins on conflict),
-//                                               then remove expired items and pulled items the inbox no longer has
+//                                               then remove pulled items that expired or the inbox no longer has
 //   node redline/redline.mjs push               Send local status changes for pulled items to the inbox
 //
-// purge uses each item's expires_at; --days N instead deletes anything older than N days.
+// purge uses each item's expires_at and keeps items without one; --days N instead deletes
+// anything older than N days. pull never removes an item it didn't bring down.
 // pull and push talk to the redline-sync edge function, never to Supabase directly, so this
 // machine holds only a sync secret and no service-role key. Configure them with
 // REDLINE_REMOTE_URL and REDLINE_SYNC_SECRET, from the environment or a gitignored
@@ -20,7 +21,6 @@ import { readFile, writeFile, mkdir, unlink, rename } from 'fs/promises'
 import { join, resolve, sep } from 'path'
 import { execSync } from 'child_process'
 
-const DEFAULT_DAYS = 30
 const DAY_MS = 86_400_000
 
 function projectRoot() {
@@ -66,11 +66,10 @@ async function writeItems(items) {
   }
 }
 
-// Items saved before expires_at existed fall back to the 30-day default
+// Only an item with an expires_at can expire. Items saved before 1.2.0 have none: they are
+// the owner's own notes, kept until purge --days removes them on purpose.
 function isExpired(r, now) {
-  const created = new Date(r.created_at ?? 0).getTime()
-  const expires = r.expires_at ? new Date(r.expires_at).getTime() : created + DEFAULT_DAYS * DAY_MS
-  return expires <= now
+  return !!r.expires_at && new Date(r.expires_at).getTime() <= now
 }
 
 // Delete a local screenshot, but only inside redline/screenshots/. Returns true if removed.
@@ -106,6 +105,10 @@ async function purge() {
   for (const r of gone) if (await removeScreenshot(r.screenshot_path)) screenshots++
   if (gone.length) await writeItems(items.filter((r) => !expired(r)))
   console.log(`Purged ${gone.length} redline${gone.length === 1 ? '' : 's'} and ${screenshots} screenshot${screenshots === 1 ? '' : 's'}.`)
+  const undated = days === null ? items.filter((r) => !r.expires_at).length : 0
+  if (undated) {
+    console.log(`Kept ${undated} redline${undated === 1 ? '' : 's'} with no expiry date (saved before 1.2.0). To remove old ones, run purge --days N.`)
+  }
 }
 
 // Remote config: environment first, then a minimal KEY=VALUE parse of <root>/.env.redline
@@ -224,10 +227,11 @@ async function pull() {
     if (changed) updated++
   }
 
-  // Retention reaches this machine too. The list above is complete (the function pages
-  // through every approved row), so a pulled item missing from it was purged, deleted, or
-  // sent back to To Review in the inbox.
-  const removed = items.filter((r) => (r.source === 'remote' && !remoteIds.has(r.id)) || isExpired(r, now))
+  // Retention reaches this machine for pulled items only. The list above is complete (the
+  // function pages through every approved row), so a pulled item missing from it was purged,
+  // deleted, or sent back to To Review in the inbox. Items created on this machine are never
+  // removed here, whatever their age: that is purge's job, run on purpose.
+  const removed = items.filter((r) => r.source === 'remote' && (!remoteIds.has(r.id) || isExpired(r, now)))
   const changedLocally = removed.filter((r) => r.source === 'remote' && r.status !== r.remote_status).map((r) => r.id)
   for (const r of removed) await removeScreenshot(r.screenshot_path)
   const gone = new Set(removed)

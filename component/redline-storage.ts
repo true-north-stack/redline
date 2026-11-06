@@ -148,12 +148,10 @@ export function localStore(projectRoot: string): RedlineStore {
   }
 }
 
-// Items saved before expires_at existed fall back to created_at + 30 days
+// Only an item with an expires_at can expire. Items saved before 1.2.0 have none and are
+// kept, so an automatic purge never deletes an owner's older notes.
 function isExpired(r: Partial<RedlineItem>, now: Date): boolean {
-  const expires = r.expires_at
-    ? new Date(r.expires_at)
-    : new Date(new Date(r.created_at ?? 0).getTime() + 30 * 86_400_000)
-  return expires.getTime() <= now.getTime()
+  return !!r.expires_at && new Date(r.expires_at).getTime() <= now.getTime()
 }
 
 // ---------------------------------------------------------------------------
