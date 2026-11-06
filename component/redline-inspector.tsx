@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { LIMITS, maskSelectors, sanitizePageUrl } from './redline-config'
 import { captureMasked, redactedText } from './redline-mask'
 
@@ -67,6 +67,11 @@ function normalizeArea(area: AreaRect): { x: number; y: number; w: number; h: nu
   return { x, y, w, h }
 }
 
+/** Whether the device's main pointer is a finger. False outside the browser. */
+function coarsePointer(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+}
+
 /** What to tell the person when a save is refused. Says "try again" only when that can work. */
 async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promise<string> {
   if (res.status === 401) return 'Sign in to leave feedback.'
@@ -108,9 +113,13 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const [areaPreview, setAreaPreview] = useState<HTMLCanvasElement | null>(null)
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
 
-  // Refs for drag state — avoids re-attaching event listeners on every mousemove
+  // Refs for drag state, read by the overlay's pointer handlers without re-rendering
   const draggingRef = useRef(false)
   const areaStartRef = useRef<{ x: number; y: number } | null>(null)
+
+  // Touch controls or desktop controls: starts from the device's main pointer, then
+  // follows whatever pressed last, so a touchscreen laptop works with both
+  const [touchUi, setTouchUi] = useState(() => active && coarsePointer())
 
   // On activation, start in initialMode; on deactivation, clear everything. Adjusted while
   // rendering (React's pattern for state that follows a prop), not in an effect.
@@ -119,6 +128,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     setSeen({ active, initialMode })
     if (active) {
       setMode(initialMode)
+      if (!seen.active) setTouchUi(coarsePointer())
     } else {
       setMode('element')
       setDragging(false)
@@ -161,7 +171,46 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   }
 
   // ---------------------------------------------------------------------------
-  // Element mode: hover tracking + click to select
+  // While on, the page never sees a press: pointerdown, mousedown, touchstart and click
+  // are stopped in the capture phase before host handlers (menus that open on
+  // pointerdown, links, buttons) react. Redline's own UI is left alone. touchstart is
+  // passive and only stopped, so the page can still scroll under a finger.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!active) return
+
+    function isRedlineUi(e: Event): boolean {
+      return e.target instanceof Element && !!e.target.closest('[data-redline-ui]')
+    }
+
+    function handlePress(e: Event) {
+      if (e instanceof PointerEvent && e.type === 'pointerdown') setTouchUi(e.pointerType === 'touch')
+      if (isRedlineUi(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    function handleTouchStart(e: TouchEvent) {
+      if (isRedlineUi(e)) return
+      e.stopPropagation()
+    }
+
+    document.addEventListener('pointerdown', handlePress, true)
+    document.addEventListener('mousedown', handlePress, true)
+    document.addEventListener('click', handlePress, true)
+    document.addEventListener('touchstart', handleTouchStart, { capture: true, passive: true })
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePress, true)
+      document.removeEventListener('mousedown', handlePress, true)
+      document.removeEventListener('click', handlePress, true)
+      document.removeEventListener('touchstart', handleTouchStart, true)
+    }
+  }, [active])
+
+  // ---------------------------------------------------------------------------
+  // Element mode: hover tracking + release to select (mouse and pen; touch picking
+  // is separate)
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!active || mode !== 'element' || selectedEl) return
@@ -188,12 +237,15 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       return null
     }
 
-    function handleMove(e: MouseEvent) {
+    function handleMove(e: PointerEvent) {
+      if (e.pointerType === 'touch') return
       const target = findBestTarget(e.clientX, e.clientY)
       setHoveredEl(target)
     }
 
-    function handleClick(e: MouseEvent) {
+    function handleUp(e: PointerEvent) {
+      // A primary-button release, as a click would be; the click itself is stopped above
+      if (e.pointerType === 'touch' || !e.isPrimary || e.button !== 0) return
       const el = e.target as HTMLElement
       if (el.closest('[data-redline-ui]')) return
 
@@ -207,12 +259,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       }
     }
 
-    document.addEventListener('mousemove', handleMove, true)
-    document.addEventListener('click', handleClick, true)
+    document.addEventListener('pointermove', handleMove, true)
+    document.addEventListener('pointerup', handleUp, true)
 
     return () => {
-      document.removeEventListener('mousemove', handleMove, true)
-      document.removeEventListener('click', handleClick, true)
+      document.removeEventListener('pointermove', handleMove, true)
+      document.removeEventListener('pointerup', handleUp, true)
     }
   }, [active, mode, selectedEl])
 
@@ -261,71 +313,63 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   }, [masksKey])
 
   // ---------------------------------------------------------------------------
-  // Area mode: drag to select region
-  // Uses refs for drag state so the effect doesn't re-attach listeners on
-  // every mousemove — only re-runs when mode/active/areaComplete changes.
+  // Area mode: drag on the interaction overlay to select a region. The overlay
+  // captures the pointer, so the drag keeps tracking outside it and the release
+  // always arrives. Drag state lives in refs; the handlers below read them.
   // ---------------------------------------------------------------------------
-  useEffect(() => {
-    if (!active || mode !== 'area' || areaComplete) return
+  const resetAreaDrag = useCallback(() => {
+    draggingRef.current = false
+    areaStartRef.current = null
+    setDragging(false)
+    setAreaRect(null)
+  }, [])
 
-    function handleMouseDown(e: MouseEvent) {
-      const el = e.target as HTMLElement
-      // The interaction overlay is Redline UI too, but dragging on it is the point
-      if (el.closest('[data-redline-ui]') && !el.hasAttribute('data-redline-area-overlay')) return
-      e.preventDefault()
-      e.stopPropagation()
-      draggingRef.current = true
-      areaStartRef.current = { x: e.clientX, y: e.clientY }
-      setDragging(true)
-      setAreaRect({ startX: e.clientX, startY: e.clientY, endX: e.clientX, endY: e.clientY })
+  const handleAreaPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    // Keep the press from the page: no compatibility mousedown, no blur of open menus
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    draggingRef.current = true
+    areaStartRef.current = { x: e.clientX, y: e.clientY }
+    setDragging(true)
+    setAreaRect({ startX: e.clientX, startY: e.clientY, endX: e.clientX, endY: e.clientY })
+  }, [])
+
+  const handleAreaPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    setMousePos({ x: e.clientX, y: e.clientY })
+    if (!draggingRef.current || !areaStartRef.current) return
+    setAreaRect({
+      startX: areaStartRef.current.x,
+      startY: areaStartRef.current.y,
+      endX: e.clientX,
+      endY: e.clientY,
+    })
+  }, [])
+
+  const handleAreaPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current || !areaStartRef.current) return
+    draggingRef.current = false
+    setDragging(false)
+
+    const finalRect: AreaRect = {
+      startX: areaStartRef.current.x,
+      startY: areaStartRef.current.y,
+      endX: e.clientX,
+      endY: e.clientY,
+    }
+    areaStartRef.current = null
+    const { w, h } = normalizeArea(finalRect)
+
+    if (w < 20 || h < 20) {
+      // Too small: an accidental click, reset
+      setAreaRect(null)
+      return
     }
 
-    function handleMouseMove(e: MouseEvent) {
-      setMousePos({ x: e.clientX, y: e.clientY })
-      if (!draggingRef.current || !areaStartRef.current) return
-      setAreaRect({
-        startX: areaStartRef.current.x,
-        startY: areaStartRef.current.y,
-        endX: e.clientX,
-        endY: e.clientY,
-      })
-    }
-
-    function handleMouseUp(e: MouseEvent) {
-      if (!draggingRef.current || !areaStartRef.current) return
-      draggingRef.current = false
-      setDragging(false)
-
-      const finalRect: AreaRect = {
-        startX: areaStartRef.current.x,
-        startY: areaStartRef.current.y,
-        endX: e.clientX,
-        endY: e.clientY,
-      }
-      const { w, h } = normalizeArea(finalRect)
-
-      if (w < 20 || h < 20) {
-        // Too small — accidental click, reset
-        setAreaRect(null)
-        areaStartRef.current = null
-        return
-      }
-
-      setAreaRect(finalRect)
-      areaStartRef.current = null
-      captureArea(finalRect)
-    }
-
-    document.addEventListener('mousedown', handleMouseDown, true)
-    document.addEventListener('mousemove', handleMouseMove, true)
-    document.addEventListener('mouseup', handleMouseUp, true)
-
-    return () => {
-      document.removeEventListener('mousedown', handleMouseDown, true)
-      document.removeEventListener('mousemove', handleMouseMove, true)
-      document.removeEventListener('mouseup', handleMouseUp, true)
-    }
-  }, [active, mode, areaComplete, captureArea])
+    // Released: capture straight away
+    setAreaRect(finalRect)
+    captureArea(finalRect)
+  }, [captureArea])
 
   // Silently capture screenshot via html2canvas when element is selected
   useEffect(() => {
@@ -611,11 +655,15 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {/* ------------------------------------------------------------------ */}
       {mode === 'area' && !areaComplete && (
         <>
-          {/* Interaction overlay — captures all mouse events so page elements
-              (dropdowns, menus, etc.) don't receive mousedown/blur and stay open */}
+          {/* Interaction overlay — captures all pointer events so page elements
+              (dropdowns, menus, etc.) don't receive pointerdown/blur and stay open */}
           <div
             data-redline-ui
             data-redline-area-overlay
+            onPointerDown={handleAreaPointerDown}
+            onPointerMove={handleAreaPointerMove}
+            onPointerUp={handleAreaPointerUp}
+            onPointerCancel={resetAreaDrag}
             style={{
               position: 'fixed',
               inset: 0,
