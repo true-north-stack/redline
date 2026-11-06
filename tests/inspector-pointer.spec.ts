@@ -1,0 +1,282 @@
+// The inspector on pointer events: the page never sees the press that picks something,
+// and desktop hover, click, S, area drag and Esc behave exactly as before.
+
+import { test, expect, type Page } from '@playwright/test'
+import { build } from 'esbuild'
+import { fileURLToPath } from 'url'
+
+const ORIGIN = 'http://redline.test'
+test.use({ viewport: { width: 1000, height: 700 }, deviceScaleFactor: 1 })
+
+let bundle = ''
+test.beforeAll(async () => {
+  const result = await build({
+    entryPoints: [fileURLToPath(new URL('./fixture/app.tsx', import.meta.url))],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': '"production"' },
+    logLevel: 'silent',
+  })
+  bundle = result.outputFiles[0].text
+})
+
+const pageHtml = (props: object = {}) => `<!doctype html><html><head><meta charset="utf-8"><style>
+  body { margin: 0; font: 16px sans-serif; background: #ffffff; }
+  #card { margin: 100px 0 0 100px; width: 420px; padding: 24px; background: #dddddd; }
+  #save { padding: 8px 16px; font-size: 16px; }
+</style></head><body>
+  <div id="card"><button id="save">Save invoice</button><p>Totals</p></div>
+  <div id="redline-root"></div>
+  <script>
+    window.__hostEvents = []
+    const save = document.getElementById('save')
+    for (const type of ['pointerdown', 'mousedown', 'click']) {
+      save.addEventListener(type, () => window.__hostEvents.push(type))
+    }
+    window.__REDLINE_PROPS__ = ${JSON.stringify(props)}
+  </script>
+  <script>${bundle}</script>
+</body></html>`
+
+async function open(page: Page, props: object = {}) {
+  await page.route(`${ORIGIN}/**`, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: pageHtml(props) }),
+  )
+  await page.goto(ORIGIN + '/x')
+  // The inspector mounts asynchronously; its key and pointer listeners are ready once the pill
+  // shows (or the bar, where touch emulation makes the main pointer coarse)
+  await expect(page.getByText('Select Element').or(page.getByTestId('redline-touch-bar'))).toBeVisible()
+}
+
+const hostEvents = (page: Page) => page.evaluate(() => (window as any).__hostEvents as string[])
+const feedbackBox = (page: Page) => page.getByPlaceholder("What's wrong? What should change?")
+const dashedOutline = (page: Page) => page.locator('[data-redline-ui][style*="dashed"]')
+const solidOutline = (page: Page) => page.locator('[data-redline-ui][style*="2px solid"]')
+
+async function center(page: Page, selector: string) {
+  const box = (await page.locator(selector).boundingBox())!
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+
+test('the page never sees pointerdown, mousedown or click on what is picked', async ({ page }) => {
+  await open(page)
+  const { x, y } = await center(page, '#save')
+  await page.mouse.move(x, y)
+  await page.mouse.click(x, y)
+  await expect(feedbackBox(page)).toBeVisible()
+  await expect(page.getByText('#save', { exact: true })).toBeVisible()
+  expect(await hostEvents(page)).toEqual([])
+})
+
+test('desktop still works as before', async ({ page }) => {
+  await open(page)
+
+  // Hover shows the dashed outline and the tag label
+  const { x, y } = await center(page, '#save')
+  await page.mouse.move(x, y)
+  await expect(dashedOutline(page)).toBeVisible()
+  await expect(page.getByText('button', { exact: true })).toBeVisible()
+
+  // The click selects: solid outline and the feedback box for #save
+  await page.mouse.click(x, y)
+  await expect(solidOutline(page)).toBeVisible()
+  await expect(dashedOutline(page)).toHaveCount(0)
+  await expect(feedbackBox(page)).toBeVisible()
+  await expect(page.getByText('#save', { exact: true })).toBeVisible()
+
+  // Cancel steps back to hovering
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(feedbackBox(page)).toBeHidden()
+  await expect(page.getByText('Select Element')).toBeVisible()
+
+  // S switches to area mode
+  await page.keyboard.press('s')
+  await expect(page.getByText('Area Screenshot')).toBeVisible()
+
+  // A drag under 20px is ignored
+  await page.mouse.move(300, 300)
+  await page.mouse.down()
+  await page.mouse.move(310, 310, { steps: 3 })
+  await page.mouse.up()
+  await expect(feedbackBox(page)).toBeHidden()
+  await expect(page.getByText('Area Screenshot')).toBeVisible()
+
+  // A 100x80 mouse drag opens the box with a preview straight away
+  const captured = page.waitForEvent('console', (m) => m.text().includes('area screenshot captured'))
+  await page.mouse.move(200, 200)
+  await page.mouse.down()
+  await page.mouse.move(250, 240, { steps: 3 })
+  await expect(page.getByText('50 × 40', { exact: true })).toBeVisible()
+  await page.mouse.move(300, 280, { steps: 3 })
+  await page.mouse.up()
+  await captured
+  await expect(page.getByText('Area Feedback')).toBeVisible()
+  await expect(page.getByText('area: 100 × 80px at (200, 200)')).toBeVisible()
+  await expect(page.locator('[data-redline-ui] canvas')).toBeVisible()
+  await expect(feedbackBox(page)).toBeFocused()
+
+  // Esc (outside the textarea) closes the box and stays in area mode, then turns Redline off
+  await feedbackBox(page).evaluate((el) => (el as HTMLElement).blur())
+  await page.keyboard.press('Escape')
+  await expect(page.getByText('Area Feedback')).toBeHidden()
+  await expect(page.getByText('Area Screenshot')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect.poll(() => page.evaluate(() => (window as any).__redlineClosed === true)).toBe(true)
+
+  expect(await hostEvents(page)).toEqual([])
+})
+
+test('a cancelled area drag resets and captures nothing', async ({ page }) => {
+  await open(page)
+  await page.keyboard.press('s')
+  await expect(page.getByText('Area Screenshot')).toBeVisible()
+
+  await page.mouse.move(200, 200)
+  await page.mouse.down()
+  await page.mouse.move(300, 280, { steps: 3 })
+  await expect(page.getByText('100 × 80', { exact: true })).toBeVisible()
+
+  // The browser takes the pointer away mid-drag (a gesture, a system dialog)
+  await page.locator('[data-redline-area-overlay]').dispatchEvent('pointercancel', { pointerId: 1, pointerType: 'mouse' })
+  await expect(page.getByText('100 × 80', { exact: true })).toBeHidden()
+  await page.mouse.up()
+  await expect(page.getByText('Area Feedback')).toBeHidden()
+  await expect(page.getByText('Area Screenshot')).toBeVisible()
+  await expect(page.locator('[data-redline-ui][style*="9999px"]')).toHaveCount(0)
+})
+
+test.describe('Esc in the feedback box closes it as Cancel does', () => {
+  const closedByHost = (page: Page) => page.evaluate(() => (window as any).__redlineClosed === true)
+
+  async function pickSave(page: Page) {
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x, y)
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeVisible()
+    await expect(feedbackBox(page)).toBeFocused()
+  }
+
+  test('with focus in the note', async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await feedbackBox(page).fill('Half a thought')
+    await page.keyboard.press('Escape')
+    await expect(feedbackBox(page)).toBeHidden()
+    await expect(page.getByText('Select Element')).toBeVisible()
+    expect(await closedByHost(page)).toBe(false)
+    // As Cancel: the next pick starts with an empty note
+    await pickSave(page)
+    await expect(feedbackBox(page)).toHaveValue('')
+  })
+
+  test('with focus on Include Screenshot', async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    const shot = page.getByLabel('Include Screenshot')
+    await shot.check()
+    await expect(shot).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(feedbackBox(page)).toBeHidden()
+    await expect(page.getByText('Select Element')).toBeVisible()
+    expect(await closedByHost(page)).toBe(false)
+    // As Cancel: the next pick starts unticked
+    await pickSave(page)
+    await expect(page.getByLabel('Include Screenshot')).not.toBeChecked()
+  })
+
+  test('for an area, with focus in the note', async ({ page }) => {
+    await open(page)
+    await page.keyboard.press('s')
+    await expect(page.getByText('Area Screenshot')).toBeVisible()
+    await page.mouse.move(200, 200)
+    await page.mouse.down()
+    await page.mouse.move(300, 280, { steps: 3 })
+    await page.mouse.up()
+    await expect(page.getByText('Area Feedback')).toBeVisible()
+    await expect(feedbackBox(page)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.getByText('Area Feedback')).toBeHidden()
+    await expect(page.getByText('Area Screenshot')).toBeVisible()
+    await expect(page.locator('[data-redline-ui][style*="9999px"]')).toHaveCount(0)
+    expect(await closedByHost(page)).toBe(false)
+  })
+})
+
+test.describe('a shortcut while Redline is on', () => {
+  async function pickSave(page: Page) {
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x, y)
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeFocused()
+  }
+
+  test('eee with the feedback box open changes nothing', async ({ page }) => {
+    await open(page, { withShortcuts: true })
+    await pickSave(page)
+    // A click on the box's own background takes focus out of the note
+    const title = page.getByText('Redline Feedback')
+    const t = (await title.boundingBox())!
+    await page.mouse.click(t.x + t.width + 40, t.y + t.height / 2)
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true)
+    await page.keyboard.type('eee')
+    await expect(feedbackBox(page)).toBeVisible()
+    await expect(page.locator('[data-redline-area-overlay]')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByText('Select Element')).toBeVisible()
+  })
+
+  test("the box is a named dialog, so the hook stands down", async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await expect(page.getByRole('dialog', { name: 'Redline Feedback' })).toContainText('Include Screenshot')
+  })
+
+  test("a host's own mode change with the box open changes nothing", async ({ page }) => {
+    await open(page)
+    await pickSave(page)
+    await page.evaluate(() => (window as any).__redlineSetMode('area'))
+    await expect(feedbackBox(page)).toBeVisible()
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByText('Select Element')).toBeVisible()
+  })
+
+  test.describe('on a touchscreen laptop', () => {
+    test.use({ hasTouch: true })
+
+    test('a staged pick is dropped when eee switches to Area', async ({ page }) => {
+      await open(page, { withShortcuts: true })
+      const { x, y } = await center(page, '#save')
+      await page.touchscreen.tap(x, y)
+      const bar = page.getByTestId('redline-touch-bar')
+      await expect(bar.getByTestId('redline-pick-name')).toHaveText('Button: Save invoice')
+      await page.keyboard.type('eee')
+      await expect(bar.getByText('Drag to draw a box.')).toBeVisible()
+      await expect(bar.getByTestId('redline-pick-name')).toHaveCount(0)
+      await expect(bar.getByRole('button', { name: 'Area' })).toHaveAttribute('aria-pressed', 'true')
+    })
+  })
+})
+
+test.describe('on a touchscreen laptop, a box opened with the mouse', () => {
+  test.use({ hasTouch: true })
+
+  test('closes on the first finger tap on Cancel', async ({ page }) => {
+    await open(page)
+    // A mouse brings the pill and the desktop box
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x - 5, y)
+    await page.mouse.move(x, y)
+    await expect(page.getByText('Select Element')).toBeVisible()
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeFocused()
+    // Past a double tap's window, so only where the tap lands decides
+    await page.waitForTimeout(600)
+
+    const cancel = (await page.getByRole('button', { name: 'Cancel' }).boundingBox())!
+    await page.touchscreen.tap(cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+    await expect(feedbackBox(page)).toBeHidden()
+    expect(await page.evaluate(() => (window as any).__redlineClosed === true)).toBe(false)
+  })
+})

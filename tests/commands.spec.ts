@@ -2,7 +2,7 @@
 // them against every project. These checks pin the parts that broke existing installs.
 
 import { test, expect } from '@playwright/test'
-import { readFile, access } from 'fs/promises'
+import { readFile, access, readdir } from 'fs/promises'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -39,6 +39,15 @@ test('update compares every installed component with the new release, never a fi
     expect(text, `update.md compares ${f}`).toContain(f)
     await access(join(repo, 'component', f))
   }
+  // Every copy-in file ships: all of component/ except the route templates is in both lists
+  const shipped = (await readdir(join(repo, 'component'))).filter((f) => !f.endsWith('-example.ts'))
+  const loop = /for f in ([^;]*); do/.exec(text)
+  expect(loop, 'update.md has the comparison loop').not.toBeNull()
+  const looped = loop![1].trim().split(/\s+/)
+  for (const f of shipped) {
+    expect(files, `AGENT-INSTALLATION step 6 lists ${f}`).toContain(f)
+    expect(looped, `update.md loop compares ${f}`).toContain(f)
+  }
   expect(text).toContain('re-run the install prompt from AGENT-INSTALLATION.md')
   expect(text).toContain('redline-config.ts')
   expect(text).toContain('redline-mask.ts')
@@ -54,4 +63,22 @@ test('VERSION matches the newest released CHANGELOG entry, and 1.2.0 keeps its u
   if (unreleased >= 0) expect(unreleased).toBeLessThan(released!.index!)
   expect(log).toContain('Upgrading from 1.1.x')
   expect(log).toContain('15.1')
+})
+
+test('the docs name exactly the files the inspector imports', async () => {
+  const inspector = await read('component/redline-inspector.tsx')
+  const components = await readdir(join(repo, 'component'))
+  const imports = [...inspector.matchAll(/from '\.\/(redline-[\w-]+)'/g)]
+    .map((m) => components.find((f) => f.replace(/\.tsx?$/, '') === m[1]))
+    .sort()
+  expect(imports.length).toBeGreaterThan(2)
+  const named = (text: string) => [...text.matchAll(/redline-[\w-]+\.tsx?/g)].map((m) => m[0]).sort()
+
+  const update = /the new inspector imports ([\s\S]*?), so copying it alone/.exec(await read('commands/redline/update.md'))
+  expect(update, 'update.md names what the inspector imports').not.toBeNull()
+  expect(named(update![1])).toEqual(imports)
+
+  const install = /It adds (.*?), which the new inspector imports/.exec(await read('AGENT-INSTALLATION.md'))
+  expect(install, 'AGENT-INSTALLATION names what the inspector imports').not.toBeNull()
+  for (const f of named(install![1])) expect(imports, `the inspector imports ${f}`).toContain(f)
 })

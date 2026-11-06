@@ -1,0 +1,146 @@
+<h2>First-time introduction, draft 4</h2>
+<p class="subtitle">Opens the first time someone turns Redline on, before they pick anything. Click through it. The switch below the modal swaps the wording between a tester (Supabase mode) and a developer (local mode).</p>
+
+<style>
+  .rl-stage{position:relative;background:#e9eaee;border-radius:12px;padding:40px 16px;display:flex;justify-content:center;min-height:470px;overflow:hidden}
+  .rl-stage::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.35)}
+  .rl-modal{position:relative;width:440px;max-width:100%;background:#1a1a1a;border:1px solid #333;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);color:#eee;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;align-self:center}
+  .rl-head{display:flex;align-items:center;gap:8px;padding:14px 16px 0}
+  .rl-dot{width:6px;height:6px;border-radius:50%;background:#ef4444}
+  .rl-brand{font-size:12px;font-weight:600;color:#aaa;letter-spacing:.02em}
+  .rl-x{margin-left:auto;background:none;border:none;color:#666;font-size:18px;cursor:pointer;line-height:1}
+  .rl-body{padding:12px 20px 4px}
+  .rl-title{font-size:18px;font-weight:650;margin:0 0 4px;color:#fff}
+  .rl-text{color:#aaa;font-size:13px;margin:0 0 14px}
+  .rl-vis{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+  .rl-card{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:10px;height:150px;position:relative;overflow:hidden}
+  .rl-cap{position:absolute;left:10px;right:10px;bottom:8px;font-size:12px;color:#ddd}
+  .rl-cap b{color:#fff}
+  .rl-fake{position:absolute;left:12px;right:12px;top:12px;display:grid;gap:6px}
+  .rl-line{height:8px;background:#2a2a2a;border-radius:4px}
+  .rl-btn-fake{width:70px;height:20px;background:#333;border-radius:5px;margin-top:4px}
+  .rl-e{position:absolute;background:#2a2a2a;border-radius:4px}
+  .rl-hl{position:absolute;border:2px dashed #ef4444;border-radius:6px;background:rgba(239,68,68,.10);animation:hl 5s infinite}
+  .rl-cursor{position:absolute;width:12px;height:16px;animation:cur 5s infinite}
+  .rl-cursor::before{content:"";position:absolute;inset:0;background:#fff;clip-path:polygon(0 0,0 100%,30% 72%,55% 100%,70% 92%,45% 65%,85% 65%)}
+  @keyframes cur{
+    0%{left:160px;top:120px;transform:scale(1)}
+    10%,28%{left:96px;top:16px}
+    36%,52%{left:74px;top:35px}
+    60%,70%{left:62px;top:64px;transform:scale(1)}
+    73%{transform:scale(.8)}
+    76%,100%{left:62px;top:64px;transform:scale(1)}}
+  @keyframes hl{
+    0%,8%{opacity:0;left:8px;top:10px;width:114px;height:14px;border-style:dashed}
+    10%,30%{opacity:1;left:8px;top:10px;width:114px;height:14px;background:rgba(239,68,68,.10)}
+    36%,54%{left:8px;top:30px;width:84px;height:12px}
+    60%,72%{left:8px;top:52px;width:74px;height:26px;background:rgba(239,68,68,.10);border-style:dashed}
+    75%,94%{opacity:1;left:8px;top:52px;width:74px;height:26px;background:rgba(239,68,68,.30);border-style:solid}
+    100%{opacity:0;left:8px;top:52px;width:74px;height:26px}}
+  .rl-area{position:absolute;left:18px;top:18px;border:2px dashed #ef4444;background:rgba(239,68,68,.10);border-radius:3px;animation:area 3s infinite}
+  .rl-cursor2{position:absolute;width:12px;height:16px;left:18px;top:18px;animation:cur2 3s infinite}
+  .rl-cursor2::before{content:"";position:absolute;inset:0;background:#fff;clip-path:polygon(0 0,0 100%,30% 72%,55% 100%,70% 92%,45% 65%,85% 65%)}
+  @keyframes area{0%,10%{width:0;height:0}60%,100%{width:120px;height:70px}}
+  @keyframes cur2{0%,10%{transform:translate(0,0)}60%,100%{transform:translate(120px,70px)}}
+  .rl-hint{font-size:12px;color:#888;margin:0 0 4px}
+  kbd{display:inline-block;min-width:18px;padding:1px 6px;background:#222;border:1px solid #333;border-bottom-width:2px;border-radius:4px;font:600 11px ui-monospace,Menlo,monospace;color:#ddd;text-align:center}
+  .rl-form{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:10px;margin-bottom:12px}
+  .rl-ta{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px;font-size:13px;color:#ddd;min-height:44px}
+  .rl-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:#aaa}
+  .rl-send{margin-left:auto;background:#ef4444;color:#fff;border-radius:6px;padding:4px 10px;font-weight:600}
+  .rl-note{font-size:12px;color:#f3c6c6;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:6px;padding:8px 10px;margin:0 0 12px}
+  .rl-keys{display:grid;grid-template-columns:auto 1fr;gap:8px 14px;align-items:center;margin:0 0 14px;font-size:13px;color:#ccc}
+  .rl-foot{display:flex;align-items:center;gap:8px;padding:12px 20px 16px;border-top:1px solid #262626;margin-top:8px}
+  .rl-check{display:flex;align-items:center;gap:6px;font-size:12px;color:#888;cursor:pointer;user-select:none}
+  .rl-dots{display:flex;gap:5px;margin-left:auto;margin-right:8px}
+  .rl-dots span{width:6px;height:6px;border-radius:50%;background:#444}
+  .rl-dots span.on{background:#ef4444}
+  .rl-b{padding:6px 14px;font-size:12px;border-radius:6px;cursor:pointer;font-weight:600}
+  .rl-ghost{border:1px solid #333;background:transparent;color:#aaa}
+  .rl-primary{border:none;background:#ef4444;color:#fff}
+  .rl-page{display:none}.rl-page.on{display:block}
+  .who{display:flex;gap:8px;justify-content:center;margin-top:14px}
+  .who button{padding:6px 12px;border-radius:999px;border:1px solid var(--border,#ccc);background:transparent;cursor:pointer;font-size:13px}
+  .who button.on{background:#111;color:#fff;border-color:#111}
+  .tester-only{display:none}.mode-tester .tester-only{display:block}.mode-tester .dev-only{display:none}
+</style>
+
+<div id="rlwrap" class="mode-tester">
+<div class="rl-stage">
+  <div class="rl-modal" role="dialog" aria-labelledby="rl-t1">
+    <div class="rl-head"><span class="rl-dot"></span><span class="rl-brand">Redline</span><button class="rl-x" aria-label="Close" onclick="rlGo(0)">×</button></div>
+
+    <div class="rl-body">
+      <div class="rl-page on" data-p="1">
+        <p class="rl-title" id="rl-t1">Point at what you mean</p>
+        <p class="rl-text">Pick one thing on the page, or a whole region.</p>
+        <div class="rl-vis">
+          <div class="rl-card">
+            <div class="rl-e" style="left:12px;top:14px;width:110px;height:10px"></div>
+            <div class="rl-e" style="left:12px;top:34px;width:80px;height:8px"></div>
+            <div class="rl-e" style="left:12px;top:56px;width:70px;height:22px;background:#3a3a3a;border-radius:5px"></div>
+            <div class="rl-hl"></div><div class="rl-cursor"></div>
+            <div class="rl-cap"><b>Element.</b> Hover, then click.</div>
+          </div>
+          <div class="rl-card">
+            <div class="rl-area"></div><div class="rl-cursor2"></div>
+            <div class="rl-cap"><b>Area.</b> Drag a box.</div>
+          </div>
+        </div>
+        <p class="rl-hint">Press <kbd>S</kbd> to switch between them.</p>
+      </div>
+
+      <div class="rl-page" data-p="2">
+        <p class="rl-title">Say what's wrong</p>
+        <p class="rl-text">A box opens with a screenshot attached. Write what you expected to see.</p>
+        <div class="rl-form">
+          <div class="rl-ta">The total should include tax.</div>
+          <div class="rl-row"><span>☑ Include screenshot</span><span class="rl-send">Send</span></div>
+        </div>
+        <p class="rl-note tester-only">Don't type client names or details. Anything private on screen is blacked out before it's sent.</p>
+        <p class="rl-hint"><kbd>⌘</kbd> <kbd>Enter</kbd> sends. <kbd>Esc</kbd> backs out.</p>
+      </div>
+
+      <div class="rl-page" data-p="3">
+        <p class="rl-title">Next time, use the keyboard</p>
+        <p class="rl-text">Tap a letter three times quickly, anywhere outside a text field.</p>
+        <div class="rl-keys">
+          <span><kbd>R</kbd><kbd>R</kbd><kbd>R</kbd></span><span>Pick an element (or <kbd>U</kbd><kbd>U</kbd><kbd>U</kbd> with your left hand)</span>
+          <span><kbd>E</kbd><kbd>E</kbd><kbd>E</kbd></span><span>Drag an area</span>
+          <span><kbd>Esc</kbd></span><span>Turn Redline off</span>
+        </div>
+        <p class="rl-hint tester-only">Every note goes to the team, who read each one.</p>
+        <p class="rl-hint dev-only">Then run <kbd>/redline fix</kbd> in Claude Code and it works through them.</p>
+      </div>
+    </div>
+
+    <div class="rl-foot">
+      <label class="rl-check"><input type="checkbox"> Don't show this again</label>
+      <div class="rl-dots"><span class="on"></span><span></span><span></span></div>
+      <button class="rl-b rl-ghost" id="rlBack" onclick="rlStep(-1)" style="visibility:hidden">Back</button>
+      <button class="rl-b rl-primary" id="rlNext" onclick="rlStep(1)">Next</button>
+    </div>
+  </div>
+</div>
+<div class="who">
+  <button class="on" data-choice="tester-wording" onclick="rlWho(this,'tester')">Tester wording</button>
+  <button data-choice="dev-wording" onclick="rlWho(this,'dev')">Developer wording</button>
+</div>
+</div>
+
+<script>
+  var rlP=1;
+  function rlGo(p){
+    if(p===0){p=1}
+    rlP=p;
+    document.querySelectorAll('.rl-page').forEach(function(el){el.classList.toggle('on',+el.dataset.p===p)});
+    document.querySelectorAll('.rl-dots span').forEach(function(d,i){d.classList.toggle('on',i===p-1)});
+    document.getElementById('rlBack').style.visibility=p>1?'visible':'hidden';
+    document.getElementById('rlNext').textContent=p===3?'Start':'Next';
+  }
+  function rlStep(d){var n=rlP+d; if(n>3){n=1} if(n<1){n=1} rlGo(n)}
+  function rlWho(btn,m){
+    document.querySelectorAll('.who button').forEach(function(b){b.classList.toggle('on',b===btn)});
+    document.getElementById('rlwrap').className='mode-'+m;
+  }
+</script>

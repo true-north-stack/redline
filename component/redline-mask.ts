@@ -45,6 +45,9 @@ function isContextual(selector: string): boolean {
   return /[\s>+~]|:host|::slotted|::part/.test(bare.trim())
 }
 
+// Everything Redline renders carries this attribute
+const REDLINE_UI = '[data-redline-ui]'
+
 /**
  * Masked elements inside (or containing) root, across open shadow roots and
  * same-origin iframes (both are rendered by the screenshot library). Throws when
@@ -148,7 +151,9 @@ export async function captureMasked(
   options: { backgroundColor?: string; scale?: number } = {},
 ): Promise<HTMLCanvasElement> {
   const { domToCanvas } = await import('modern-screenshot')
-  const targets: Target[] = findTargets(root, selectors).map(({ mark, box }) => {
+  // Redline's own overlays (the area box, its handles, the bar) are left out of the
+  // picture, so masked matches inside them have nothing to redact
+  const targets: Target[] = findTargets(root, selectors).filter(({ box }) => !box.closest(REDLINE_UI)).map(({ mark, box }) => {
     const rect = box.getBoundingClientRect()
     return {
       el: mark,
@@ -165,6 +170,7 @@ export async function captureMasked(
     const canvas = await domToCanvas(root, {
       backgroundColor: backgroundBehind(root),
       ...options,
+      filter: (node) => node.nodeType !== Node.ELEMENT_NODE || !(node as Element).matches(REDLINE_UI),
       // modern-screenshot drops the root's own margins, and the copy it draws then
       // falls back to the browser's defaults for that tag (h1, p, ul…), pushing the
       // content down and clipping it. Pin the root copy's margins to zero.
