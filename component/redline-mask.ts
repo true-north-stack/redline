@@ -370,9 +370,9 @@ function redactClone(el: HTMLElement, t: Target) {
 
 // Boxes that start a new line in what the reader sees. Flex and grid items are reported
 // blockified by getComputedStyle, so their parent decides instead (see Row below).
-const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)\b/
+const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)$/
 // Side-by-side boxes that still need a gap between them
-const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)\b/
+const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)$/
 
 /**
  * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
@@ -397,7 +397,9 @@ export function redactedText(el: HTMLElement, selectors: string[], maxLength: nu
   const walk = (node: Node, keepBreaks: boolean, row: Row | null = null): boolean => {
     if (visible > maxLength) return false
     if (masked.has(node)) {
-      out += ` ${REDACTED} `
+      // A masked item still takes its place in a row, so the next item reads beside it
+      const onNewRow = row && node.nodeType === Node.ELEMENT_NODE && !row.sameLine(node as Element)
+      out += `${onNewRow ? '\n' : ' '}${REDACTED} `
       visible += REDACTED.length
       return true
     }
@@ -424,10 +426,16 @@ export function redactedText(el: HTMLElement, selectors: string[], maxLength: nu
       return true
     }
     // An item of a flex row or grid sits beside the one before it unless it starts a new
-    // row on screen; anything else follows its own display
-    const before = row ? (row.sameLine(child) ? ' ' : '\n') : BLOCK_DISPLAY.test(display) ? '\n' : SPACED_DISPLAY.test(display) ? ' ' : ''
+    // row on screen; anything else follows its own display. An out-of-flow item (a badge, sr-only
+    // text) reads beside its neighbours and doesn't count as the previous item.
+    const outOfFlow = !!style && (style.position === 'absolute' || style.position === 'fixed')
+    const before = row
+      ? outOfFlow || row.sameLine(child) ? ' ' : '\n'
+      : BLOCK_DISPLAY.test(display) ? '\n' : SPACED_DISPLAY.test(display) ? ' ' : ''
     const after = row ? ' ' : before
-    const inner = style ? rowOf(child, style) : null
+    // The picked element itself counts as a block for its own separators, but a row
+    // or grid that is picked directly still reads its items as one
+    const inner = rowOf(child, style ?? getComputedStyle(child))
     out += before
     for (const c of Array.from(child.childNodes)) if (!walk(c, keep, inner)) return false
     out += after

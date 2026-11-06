@@ -64,7 +64,12 @@ const pageHtml = (props: object) => `<!doctype html><html><head><meta charset="u
     <div style="display: flex; flex-direction: column;"><span>Line one</span><span>Line two</span></div>
     <div class="row"><div style="display: contents"><span>Open</span><span>3</span></div></div>
     <div class="row" style="flex-wrap: wrap; width: 120px;"><span style="width: 100px">Wrapped</span><span style="width: 100px">onto two</span></div>
+    <table><tr><td>Cell a</td><td>Cell b</td></tr><tr><td>Cell c</td><td>Cell d</td></tr></table>
+    <div style="display: grid; grid-template-columns: 1fr 1fr;"><span data-phi>Jane</span><span>x</span><span>y</span><span>z</span></div>
+    <div class="row" style="flex-wrap: wrap; position: relative;"><span>one</span><span style="position: absolute; right: 0; top: 0;">badge</span><span>two</span></div>
   </div>
+  <div id="pickrow" style="position: absolute; left: 840px; top: 400px; display: flex; gap: 8px; padding: 6px; background: #eeeeee;"><span>Client:</span><span data-phi>Jane</span><span>end</span></div>
+  <div id="pickgrid" style="position: absolute; left: 840px; top: 460px; display: grid; grid-template-columns: 40px 40px; gap: 12px; padding: 6px; background: #eeeeee;"><span>A</span><span>B</span><span>C</span><span>D</span></div>
   <pre id="log" style="position: absolute; left: 40px; top: 650px; margin: 0;">line one
 line two</pre>
   <!-- A component whose masked part shows a name passed in through a slot -->
@@ -400,5 +405,23 @@ test('items side by side read on one line; a new row on screen starts a new line
     'Open 3',
     'Wrapped',
     'onto two',
+    'Cell a Cell b',
+    'Cell c Cell d',
+    '[redacted] x',
+    'y z',
+    'one badge two',
   ].join('\n'))
 })
+
+for (const [what, selector, want] of [
+  ['flex row', '#pickrow', 'Client: [redacted] end'],
+  ['grid', '#pickgrid', 'A B\nC D'],
+] as const) {
+  test(`a ${what} picked directly reads its items the same way`, async ({ page }) => {
+    const posts = await open(page)
+    await pick(page, selector, 2, 2) // the padding, so the container itself is picked
+    await page.getByLabel('Include Screenshot').check()
+    const text = String((await send(page, posts)).get('element_text')).replace(/\r\n/g, '\n')
+    expect(text).toBe(want)
+  })
+}
