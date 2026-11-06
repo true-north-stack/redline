@@ -4,7 +4,8 @@ import { useRedlineShortcuts } from '../../component/redline-shortcuts'
 
 const w = window as any
 w.__activations = []
-const options = w.__SHORTCUT_OPTIONS__ ?? {}
+// dialog: true renders a Redline dialog, as the introduction is while open
+const { dialog, ...options } = w.__SHORTCUT_OPTIONS__ ?? {}
 
 function Harness() {
   useRedlineShortcuts((mode) => { w.__activations.push(mode) }, options)
@@ -12,9 +13,11 @@ function Harness() {
     <div>
       <input data-testid="field" />
       <div data-testid="editable" contentEditable suppressContentEditableWarning />
-      <div role="dialog" data-redline-ui>
-        <button data-testid="dialog-button">Next</button>
-      </div>
+      {dialog && (
+        <div role="dialog" data-redline-ui>
+          <button data-testid="dialog-button">Next</button>
+        </div>
+      )}
     </div>
   )
 }

@@ -86,22 +86,23 @@ test('enabled false listens to nothing', async ({ page }) => {
   expect(await activations(page)).toEqual([])
 })
 
-test('keys inside a Redline dialog do nothing', async ({ page }) => {
-  await load(page)
-  // The introduction is open with focus on its button
+test('while a Redline dialog is open, keys do nothing wherever focus is', async ({ page }) => {
+  await load(page, { dialog: true })
+  // Focus on the dialog's button
   await page.getByTestId('dialog-button').focus()
   await page.keyboard.type('rrr')
   await page.keyboard.type('eee')
-  expect(await activations(page)).toEqual([])
-  // A keydown aimed at the page while focus sits in the dialog is ignored too
-  await page.evaluate(() => {
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
-  })
-  expect(await activations(page)).toEqual([])
-  // Outside the dialog the keys work again
+  // Focus dropped to the page while the dialog is still open
   await page.evaluate(() => (document.activeElement as HTMLElement).blur())
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true)
+  await page.keyboard.type('rrr')
+  await page.keyboard.type('eee')
+  expect(await activations(page)).toEqual([])
+})
+
+test('with no Redline dialog, keys from the page still work', async ({ page }) => {
+  await load(page)
+  await expect(page.locator('[role="dialog"]')).toHaveCount(0)
   await page.keyboard.type('rrr')
   expect(await activations(page)).toEqual(['element'])
 })

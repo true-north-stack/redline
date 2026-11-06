@@ -182,10 +182,12 @@ test.describe('desktop', () => {
   test('while it is open the inspector ignores every key', async ({ page }) => {
     await open(page)
     await expect(intro(page)).toBeVisible()
-    // Focus on the primary button: S would toggle the mode behind the modal
+    // Focus on the primary button: S would toggle the mode behind the modal. Pressed an odd
+    // number of times in all, so a toggle that slipped through can't cancel itself out.
     await page.keyboard.press('s')
-    // Focus dropped to the page: Esc and S still do nothing to the inspector
+    // Focus dropped to the page: S and Esc still do nothing to the inspector
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await page.keyboard.press('s')
     await page.keyboard.press('s')
     await page.keyboard.press('Escape')
     expect(await closed(page)).toBe(false)
