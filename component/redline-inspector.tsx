@@ -386,9 +386,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
 
     // Touch controls follow the finger, desktop controls follow a mouse or pen. The
-    // introduction keeps the version it opened with, so a tap on it can't reshape it.
+    // introduction and the feedback box keep the layout they opened with, so a tap on one
+    // can't grow its buttons between press and release and miss.
     function followPointer(e: PointerEvent) {
-      if (introOpen) return
+      if (introOpen || showingFeedback) return
       const touch = e.pointerType === 'touch'
       setTouchUi(touch)
       if (touch) setHoveredEl(null)
@@ -443,7 +444,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       document.removeEventListener('touchend', handleTouch, true)
       document.removeEventListener('pointermove', handleMove, true)
     }
-  }, [active, introOpen, openIntro])
+  }, [active, introOpen, showingFeedback, openIntro])
 
   // ---------------------------------------------------------------------------
   // Element mode. Mouse and pen: hover tracking + release to select. Touch: only a

@@ -258,3 +258,25 @@ test.describe('a shortcut while Redline is on', () => {
     })
   })
 })
+
+test.describe('on a touchscreen laptop, a box opened with the mouse', () => {
+  test.use({ hasTouch: true })
+
+  test('closes on the first finger tap on Cancel', async ({ page }) => {
+    await open(page)
+    // A mouse brings the pill and the desktop box
+    const { x, y } = await center(page, '#save')
+    await page.mouse.move(x - 5, y)
+    await page.mouse.move(x, y)
+    await expect(page.getByText('Select Element')).toBeVisible()
+    await page.mouse.click(x, y)
+    await expect(feedbackBox(page)).toBeFocused()
+    // Past a double tap's window, so only where the tap lands decides
+    await page.waitForTimeout(600)
+
+    const cancel = (await page.getByRole('button', { name: 'Cancel' }).boundingBox())!
+    await page.touchscreen.tap(cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+    await expect(feedbackBox(page)).toBeHidden()
+    expect(await page.evaluate(() => (window as any).__redlineClosed === true)).toBe(false)
+  })
+})
