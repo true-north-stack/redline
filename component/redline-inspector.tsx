@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { maskSelectors, sanitizePageUrl } from './redline-config'
+import { LIMITS, maskSelectors, sanitizePageUrl } from './redline-config'
 import { captureMasked, redactedText } from './redline-mask'
 
 interface RedlineInspectorProps {
@@ -67,6 +67,24 @@ function normalizeArea(area: AreaRect): { x: number; y: number; w: number; h: nu
   return { x, y, w, h }
 }
 
+/** What to tell the person when a save is refused. Says "try again" only when that can work. */
+async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promise<string> {
+  if (res.status === 401) return 'Sign in to leave feedback.'
+  if (res.status === 429) return 'Too many notes in a row. Wait a few minutes, then send it again.'
+  if (res.status === 413) {
+    let field: unknown = null
+    try {
+      field = (await res.json())?.field
+    } catch {
+      // Hosts and platforms can answer 413 without a JSON body
+    }
+    if (field === 'feedback') return 'Your note is too long. Shorten it and try again.'
+    if (sentScreenshot) return 'Too large to send. Untick Include Screenshot and try again.'
+    return 'Too large to send. Shorten your note and try again.'
+  }
+  return `Couldn't save your feedback (${res.status}). Try again.`
+}
+
 export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors }: RedlineInspectorProps) {
   const [hoveredEl, setHoveredEl] = useState<HTMLElement | null>(null)
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
@@ -82,33 +100,38 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // Area screenshot mode
-  const [mode, setMode] = useState<InspectorMode>('element')
+  const [mode, setMode] = useState<InspectorMode>(active ? initialMode : 'element')
   const [dragging, setDragging] = useState(false)
   const [areaRect, setAreaRect] = useState<AreaRect | null>(null)
   const [areaComplete, setAreaComplete] = useState(false)
+  // The cropped area capture, kept in state so the modal can preview it
+  const [areaPreview, setAreaPreview] = useState<HTMLCanvasElement | null>(null)
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
 
   // Refs for drag state — avoids re-attaching event listeners on every mousemove
   const draggingRef = useRef(false)
   const areaStartRef = useRef<{ x: number; y: number } | null>(null)
 
-  // Apply initialMode when activated
-  useEffect(() => {
+  // On activation, start in initialMode; on deactivation, clear everything. Adjusted while
+  // rendering (React's pattern for state that follows a prop), not in an effect.
+  const [seen, setSeen] = useState({ active, initialMode })
+  if (seen.active !== active || seen.initialMode !== initialMode) {
+    setSeen({ active, initialMode })
     if (active) {
       setMode(initialMode)
-    }
-  }, [active, initialMode])
-
-  // Reset state when deactivated
-  useEffect(() => {
-    if (!active) {
+    } else {
       setMode('element')
       setDragging(false)
       setAreaRect(null)
       setAreaComplete(false)
+      setAreaPreview(null)
       setMousePos(null)
       setHoveredEl(null)
       setSelectedEl(null)
+    }
+  }
+  useEffect(() => {
+    if (!active) {
       draggingRef.current = false
       areaStartRef.current = null
     }
@@ -131,9 +154,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const showingFeedback = !!(selectedEl || areaComplete)
 
   // Clear a stale submit error whenever the modal closes
-  useEffect(() => {
+  const [wasShowing, setWasShowing] = useState(showingFeedback)
+  if (wasShowing !== showingFeedback) {
+    setWasShowing(showingFeedback)
     if (!showingFeedback) setSubmitError(null)
-  }, [showingFeedback])
+  }
 
   // ---------------------------------------------------------------------------
   // Element mode: hover tracking + click to select
@@ -200,7 +225,6 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       const scrollX = window.scrollX
       const scrollY = window.scrollY
       const fullCanvas = await captureMasked(document.documentElement, masksKey.split('\n'), {
-        backgroundColor: '#1a1a1a',
         scale: dpr,
       })
 
@@ -218,6 +242,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         )
       }
       screenshotCanvasRef.current = cropCanvas
+      setAreaPreview(cropCanvas)
       setIncludeScreenshot(true)
       setAreaComplete(true)
       console.log('[redline] area screenshot captured:', w, 'x', h)
@@ -226,6 +251,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       // Masking or capture failed: drop the screenshot rather than send it unmasked
       console.warn('[redline] area screenshot dropped:', err)
       screenshotCanvasRef.current = null
+      setAreaPreview(null)
       setIncludeScreenshot(false)
       setScreenshotDropped(true)
       // Still show feedback modal even if capture fails
@@ -313,7 +339,6 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setScreenshotDropped(false)
       try {
         const canvas = await captureMasked(selectedEl, masksKey.split('\n'), {
-          backgroundColor: '#1a1a1a',
           scale: 2,
         })
         screenshotCanvasRef.current = canvas
@@ -433,11 +458,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         })
       }
       if (!res.ok) {
-        setSubmitError(
-          res.status === 401
-            ? 'Sign in to leave feedback.'
-            : `Couldn't save your feedback (${res.status}). Try again.`,
-        )
+        setSubmitError(await submitErrorMessage(res, includeScreenshot && !!screenshotCanvasRef.current))
         return
       }
       window.dispatchEvent(new CustomEvent('redline:submitted'))
@@ -777,13 +798,13 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             )}
 
             {/* Screenshot preview (area mode) */}
-            {areaComplete && screenshotCanvasRef.current && (
+            {areaComplete && areaPreview && (
               <div style={{ marginBottom: 12, borderRadius: 6, overflow: 'hidden', border: '1px solid #333' }}>
                 <canvas
                   ref={(el) => {
-                    if (el && screenshotCanvasRef.current) {
+                    if (el) {
                       const ctx = el.getContext('2d')
-                      const src = screenshotCanvasRef.current
+                      const src = areaPreview
                       // Scale down to fit modal width (~360px)
                       const maxW = 360
                       const scale = Math.min(1, maxW / (src.width / (window.devicePixelRatio || 1)))
@@ -807,6 +828,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               value={feedback}
               onChange={(e) => { setFeedback(e.target.value); setSubmitError(null) }}
               placeholder="What's wrong? What should change?"
+              maxLength={LIMITS.feedback}
               onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleSubmit() }}
               style={{
                 width: '100%',

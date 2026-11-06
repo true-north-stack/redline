@@ -4,7 +4,7 @@
 // detail pane. State lives in the URL (?status=&tester=&version=&id=) through the History
 // API on the current path, so it works inside Next and outside it.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Camera } from 'lucide-react'
 import { RedlineAdminDetail } from './redline-admin-detail'
 import { STATUS_LABELS } from './redline-admin-types'
@@ -29,8 +29,15 @@ const ZERO: Record<RedlineStatus, number> = { review: 0, open: 0, fixed: 0, dism
 const control =
   'min-h-[44px] rounded-md border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50'
 
-function readQuery(): Query {
-  const p = new URLSearchParams(window.location.search)
+const DEFAULT_QUERY: Query = { status: 'review', tester: '', version: '', id: null }
+// Fired after every history write, so the URL store below re-reads it
+const LOCATION_EVENT = 'redline:inbox-location'
+const getSearch = () => window.location.search
+// The server render has no URL; the inbox waits for the client before it loads anything
+const getServerSearch = () => null
+
+function readQuery(search: string): Query {
+  const p = new URLSearchParams(search)
   const s = p.get('status')
   const status: Tab = s === 'all' || TABS.some((t) => t.key === s) ? (s as Tab) : 'review'
   return { status, tester: p.get('tester') ?? '', version: p.get('version') ?? '', id: UUID.test(p.get('id') ?? '') ? p.get('id') : null }
@@ -46,6 +53,7 @@ function writeQuery(q: Query, mode: 'push' | 'replace') {
   const url = `${window.location.pathname}?${p.toString()}`
   if (mode === 'push') window.history.pushState({ redlineInbox: true }, '', url)
   else window.history.replaceState(window.history.state, '', url)
+  window.dispatchEvent(new Event(LOCATION_EVENT))
 }
 
 const rtf = typeof Intl !== 'undefined' ? new Intl.RelativeTimeFormat('en', { numeric: 'auto' }) : null
@@ -115,8 +123,26 @@ function Row({ item, selected, onOpen }: { item: AdminItem; selected: boolean; o
 }
 
 export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?: string }) {
-  const [q, setQ] = useState<Query>({ status: 'review', tester: '', version: '', id: null })
-  const [ready, setReady] = useState(false)
+  const qRef = useRef<Query>(DEFAULT_QUERY)
+  const focusNext = useRef<'detail' | 'list' | null>(null)
+  // The URL is the one source of truth for tab, filters and selection
+  const subscribe = useCallback((notify: () => void) => {
+    const onPop = () => {
+      // Back out of an item: return focus to the list. Decided before React re-renders,
+      // while qRef still holds the query that was showing.
+      if (qRef.current.id && !readQuery(window.location.search).id) focusNext.current = 'list'
+      notify()
+    }
+    window.addEventListener('popstate', onPop)
+    window.addEventListener(LOCATION_EVENT, notify)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener(LOCATION_EVENT, notify)
+    }
+  }, [])
+  const search = useSyncExternalStore(subscribe, getSearch, getServerSearch)
+  const ready = search !== null
+  const q = useMemo(() => (search === null ? DEFAULT_QUERY : readQuery(search)), [search])
   const [items, setItems] = useState<AdminItem[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [counts, setCounts] = useState<Record<RedlineStatus, number>>(ZERO)
@@ -128,16 +154,17 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   const [undo, setUndo] = useState<Undo | null>(null)
   const desktop = useDesktop()
 
-  const qRef = useRef(q)
-  qRef.current = q
   const itemsRef = useRef(items)
-  itemsRef.current = items
   const reqId = useRef(0)
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const undoRef = useRef<Undo | null>(null)
-  undoRef.current = undo
+  // Handlers and async callbacks read the latest committed values through these
+  useLayoutEffect(() => {
+    qRef.current = q
+    itemsRef.current = items
+    undoRef.current = undo
+  })
   const loadingFirst = useRef(false)
-  const focusNext = useRef<'detail' | 'list' | null>(null)
   const openedFrom = useRef<string | null>(null)
   const detailRef = useRef<HTMLElement>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -158,19 +185,9 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
     [apiUrl, q.status, q.tester, q.version],
   )
 
-  // Read the URL after mount (server render has no window) and follow history
+  // Normalize the URL once on the client: drops anything we did not accept (bad id, unknown status)
   useEffect(() => {
-    const initial = readQuery()
-    setQ(initial)
-    writeQuery(initial, 'replace') // drops anything we did not accept (bad id, unknown status)
-    setReady(true)
-    const onPop = () => {
-      const next = readQuery()
-      if (qRef.current.id && !next.id) focusNext.current = 'list'
-      setQ(next)
-    }
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
+    writeQuery(readQuery(window.location.search), 'replace')
   }, [])
 
   const applyPage = (data: AdminListResponse, append: boolean) => {
@@ -181,36 +198,62 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
     setVersions(data.versions)
   }
 
-  const loadFirst = useCallback(async () => {
+  // Which list URL the current list state belongs to. A filter change shows the skeleton
+  // straight away (derived below), with no state set inside an effect.
+  const [listFor, setListFor] = useState<string | null>(null)
+  const listUrl = ready ? buildUrl() : null
+
+  // First page of the current list. State is only set in the promise callbacks.
+  const fetchFirst = useCallback(() => {
     const mine = ++reqId.current
     loadingFirst.current = true
-    setState('loading')
-    setMoreError(false)
-    try {
-      const res = await fetch(buildUrl())
-      if (!res.ok) throw new Error(String(res.status))
-      const data = (await res.json()) as AdminListResponse
-      if (mine !== reqId.current) return
-      loadingFirst.current = false
-      applyPage(data, false)
-      setState('ready')
-    } catch {
-      if (mine === reqId.current) {
+    const url = buildUrl()
+    return fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status))
+        return res.json() as Promise<AdminListResponse>
+      })
+      .then((data) => {
+        if (mine !== reqId.current) return
         loadingFirst.current = false
+        applyPage(data, false)
+        setMoreError(false)
+        setListFor(url)
+        setState('ready')
+      })
+      .catch(() => {
+        if (mine !== reqId.current) return
+        loadingFirst.current = false
+        setListFor(url)
         setState('error')
-      }
-    }
+      })
   }, [buildUrl])
 
   useEffect(() => {
-    if (ready) loadFirst()
-  }, [ready, loadFirst])
+    if (ready) void fetchFirst()
+  }, [ready, fetchFirst])
+
+  // Handlers that finish after a re-render (a failed Undo, a stale PATCH) must fetch the
+  // list as it is now, not as it was when they started
+  const fetchFirstRef = useRef(fetchFirst)
+  useLayoutEffect(() => {
+    fetchFirstRef.current = fetchFirst
+  }, [fetchFirst])
+
+  // Reload from a handler (Retry, a failed Undo): show the skeleton while it runs
+  function reload() {
+    setState('loading')
+    setMoreError(false)
+    void fetchFirstRef.current()
+  }
+
+  const view = listFor === listUrl ? state : 'loading'
 
   // A local change makes any list response that started earlier stale. A first-page load
   // is re-run (the server already has the change); a Load more is dropped and can be retried.
   function invalidateLists() {
     reqId.current++
-    if (loadingFirst.current) loadFirst()
+    if (loadingFirst.current) void fetchFirstRef.current()
   }
 
   async function loadMore() {
@@ -231,23 +274,17 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
   }
 
   function changeFilter(patch: Partial<Query>) {
-    const next = { ...qRef.current, ...patch }
-    setQ(next)
-    writeQuery(next, 'replace')
+    writeQuery({ ...qRef.current, ...patch }, 'replace')
   }
 
   function openItem(id: string) {
     openedFrom.current = id
     focusNext.current = 'detail'
-    const next = { ...qRef.current, id }
-    setQ(next)
-    writeQuery(next, 'push')
+    writeQuery({ ...qRef.current, id }, 'push')
   }
 
   function selectQuiet(id: string | null) {
-    const next = { ...qRef.current, id }
-    setQ(next)
-    writeQuery(next, 'replace')
+    writeQuery({ ...qRef.current, id }, 'replace')
   }
 
   function back() {
@@ -322,7 +359,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
         setUndo({ item, previous, error })
         undoTimer.current = setTimeout(() => setUndo((u) => (u?.item.id === item.id ? null : u)), UNDO_MS)
       }
-      loadFirst()
+      reload()
     }
     try {
       const res = await fetch(`${apiUrl}/${encodeURIComponent(item.id)}`, {
@@ -358,6 +395,9 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
     }
   }
 
+  const showList = desktop || !q.id
+  const showDetail = desktop || !!q.id
+
   // Move focus after a selection change so it never drops to <body>
   useEffect(() => {
     const want = focusNext.current
@@ -381,8 +421,6 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
 
   const testerOptions = q.tester && !testers.some((t) => t.id === q.tester) ? [...testers, { id: q.tester, label: q.tester }] : testers
   const versionOptions = q.version && !versions.includes(q.version) ? [...versions, q.version] : versions
-  const showList = desktop || !q.id
-  const showDetail = desktop || !!q.id
 
   return (
     <div className="relative flex min-w-0 flex-col lg:h-[calc(100dvh-4rem)] lg:flex-row">
@@ -431,7 +469,7 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
           </div>
         </div>
 
-        {state === 'loading' && (
+        {view === 'loading' && (
           <ul aria-busy="true" className="flex flex-col">
             {[0, 1, 2, 3, 4].map((n) => (
               <li key={n} data-skeleton className="flex min-h-[44px] animate-pulse flex-col gap-2 border-b border-border px-4 py-3">
@@ -443,18 +481,18 @@ export function RedlineAdminInbox({ apiUrl = '/api/admin/redlines' }: { apiUrl?:
           </ul>
         )}
 
-        {state === 'error' && (
+        {view === 'error' && (
           <div className="flex flex-col items-start gap-3 p-4">
             <p role="alert" className="text-sm text-destructive">Could not load feedback.</p>
-            <button type="button" onClick={loadFirst} className={control}>Retry</button>
+            <button type="button" onClick={reload} className={control}>Retry</button>
           </div>
         )}
 
-        {state === 'ready' && items.length === 0 && (
+        {view === 'ready' && items.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">{emptyText(q.status)}</p>
         )}
 
-        {state === 'ready' && items.length > 0 && (
+        {view === 'ready' && items.length > 0 && (
           <>
             <ul className="flex flex-col">
               {items.map((item) => (

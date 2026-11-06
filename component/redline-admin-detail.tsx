@@ -3,7 +3,7 @@
 // Admin inbox detail pane: shows one feedback item and lets the owner change its status.
 // The inbox shell owns Undo, list removal and counts; this reports through callbacks.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowLeft, ExternalLink, X, ImageOff, Loader2 } from 'lucide-react'
 import { STATUS_LABELS } from './redline-admin-types'
 import type { AdminDetail, AdminItem } from './redline-admin-types'
@@ -58,7 +58,12 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
   const [actionError, setActionError] = useState<string | null>(null)
   const refetched = useRef<Set<string>>(new Set())
   const current = useRef(id)
-  current.current = id
+  // The latest onGone, so a fetch that finishes after a re-render calls the current one
+  const onGoneRef = useRef(onGone)
+  useLayoutEffect(() => {
+    current.current = id
+    onGoneRef.current = onGone
+  })
   const closeRef = useRef<HTMLButtonElement>(null)
   const thumbRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -77,7 +82,8 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
     [apiUrl],
   )
 
-  const initial = useCallback(async () => {
+  // Back to a blank pane: on a new id (during render, so the old item never flashes) and on Retry
+  function reset() {
     setLoad('loading')
     setDetail(null)
     setShotFailed(false)
@@ -85,23 +91,38 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
     setNotice(null)
     setActionError(null)
     setBusy(false)
-    const forId = id
-    const r = await fetchItem(forId)
-    if (current.current !== forId) return
-    if (r === 'gone') {
-      setLoad('gone')
-      onGone(forId)
-    } else if (r === 'error') setLoad('error')
-    else {
-      setDetail(r)
-      setLoad('ready')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, fetchItem])
+  }
+  const [shownId, setShownId] = useState(id)
+  if (shownId !== id) {
+    setShownId(id)
+    reset()
+  }
+
+  // State is set in the promise callback, never synchronously in the effect body
+  const loadItem = useCallback(
+    (forId: string) =>
+      fetchItem(forId).then((r) => {
+        if (current.current !== forId) return
+        if (r === 'gone') {
+          setLoad('gone')
+          onGoneRef.current(forId)
+        } else if (r === 'error') setLoad('error')
+        else {
+          setDetail(r)
+          setLoad('ready')
+        }
+      }),
+    [fetchItem],
+  )
 
   useEffect(() => {
-    initial()
-  }, [initial])
+    void loadItem(id)
+  }, [id, loadItem])
+
+  function retry() {
+    reset()
+    void loadItem(id)
+  }
 
   useEffect(() => {
     if (!viewer) return
@@ -151,7 +172,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
     if (current.current !== forId) return
     if (r === 'gone') {
       setLoad('gone')
-      onGone(forId)
+      onGoneRef.current(forId)
     } else if (r === 'error' || !r.screenshot_url) setShotFailed(true)
     else setDetail(r)
   }
@@ -172,7 +193,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
       const live = () => current.current === forId
       if (res.status === 404) {
         if (live()) setLoad('gone')
-        onGone(forId)
+        onGoneRef.current(forId)
       } else if (res.status === 409) {
         const { current: latest } = (await res.json()) as { current: AdminItem }
         if (live()) {
@@ -229,7 +250,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
       <div className="flex h-full flex-col gap-4 p-4">
         {backBtn}
         <p role="alert" className="text-sm text-destructive">Could not load this feedback.</p>
-        <button type="button" onClick={initial} className={`${btn} self-start`}>Retry</button>
+        <button type="button" onClick={retry} className={`${btn} self-start`}>Retry</button>
       </div>
     )
   }
@@ -271,6 +292,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
             onClick={() => setViewer(true)}
             className="block min-h-[44px] w-full overflow-hidden rounded-md"
           >
+            {/* eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL; next/image would need every host to allow its storage domain */}
             <img
               src={detail.screenshot_url!}
               alt="Screenshot of the page"
@@ -281,7 +303,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
         ) : (
           <div className="flex min-h-[44px] items-center gap-2 text-sm text-muted-foreground">
             <ImageOff className="h-4 w-4" />
-            Screenshot no longer available
+            {detail.screenshot_path ? 'Screenshot no longer available' : 'No screenshot'}
           </div>
         )}
       </div>
@@ -353,6 +375,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
           >
             <X className="h-5 w-5" />
           </button>
+          {/* eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL; next/image would need every host to allow its storage domain */}
           <img
             src={detail.screenshot_url!}
             alt="Screenshot of the page"
@@ -367,6 +390,7 @@ export function RedlineAdminDetail({ apiUrl, id, onBack, onStatusChanged, onRefr
 }
 
 function stripDetail(d: AdminDetail): AdminItem {
-  const { screenshot_url: _drop, ...item } = d
-  return item
+  const item: Partial<AdminDetail> = { ...d }
+  delete item.screenshot_url
+  return item as AdminItem
 }
