@@ -774,6 +774,7 @@ test('pull removes a pulled item once its expires_at passes', async () => {
   expect(r.code).toBe(0)
   expect(r.out).toContain('Removed 1 redline no longer here to fix')
   expect((await readLocal(root)).some((x) => x.id === r0.id)).toBe(false)
+  await deleteRemote(r0) // an expired row left behind would be counted by the purge test
 })
 
 test('pull names a removed item that had an unpushed local change', async () => {

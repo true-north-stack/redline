@@ -140,8 +140,12 @@ async function requireRemote() {
     throw new Error('REDLINE_REMOTE_URL is not a valid URL')
   }
   console.log(`Supabase: ${host}`)
-  return remote
+  return { ...remote, host }
 }
+
+// A pulled item belongs to the remote it came from. Items pulled before remote_host was
+// recorded can't say, so they count as the current remote's.
+const fromRemote = (r, remote) => r.source === 'remote' && (!r.remote_host || r.remote_host === remote.host)
 
 async function sync(remote, body) {
   const res = await fetch(`${remote.url}/functions/v1/redline-sync`, {
@@ -202,7 +206,7 @@ async function pull() {
   let updated = 0
   let discarded = 0
   for (const { screenshot_url, ...r } of json.items) {
-    const synced = { source: 'remote', remote_status: r.status, remote_status_updated_at: r.status_updated_at }
+    const synced = { source: 'remote', remote_host: remote.host, remote_status: r.status, remote_status_updated_at: r.status_updated_at }
     const local = byId.get(r.id)
     if (!local) {
       if (isExpired(r, now)) continue // past retention, awaiting the daily purge: never bring it down
@@ -213,7 +217,7 @@ async function pull() {
       added++
       continue
     }
-    if (local.source !== 'remote') continue
+    if (!fromRemote(local, remote)) continue
     const untouched = local.status === local.remote_status
     const remoteMoved = local.remote_status_updated_at !== r.status_updated_at
     if (!untouched && !remoteMoved) continue // unpushed local change, remote unchanged: push will send it
@@ -227,12 +231,17 @@ async function pull() {
     if (changed) updated++
   }
 
-  // Retention reaches this machine for pulled items only. The list above is complete (the
-  // function pages through every approved row), so a pulled item missing from it was purged,
-  // deleted, or sent back to To Review in the inbox. Items created on this machine are never
-  // removed here, whatever their age: that is purge's job, run on purpose.
-  const removed = items.filter((r) => r.source === 'remote' && (!remoteIds.has(r.id) || isExpired(r, now)))
-  const changedLocally = removed.filter((r) => r.source === 'remote' && r.status !== r.remote_status).map((r) => r.id)
+  // Retention reaches this machine for items pulled from this remote only. The list above is
+  // complete (the function pages through every approved row), so a pulled item missing from
+  // it was purged, deleted, or sent back to To Review in the inbox. Items created on this
+  // machine, or pulled from another remote, are never removed here: that is purge's job,
+  // run on purpose. An empty list next to pulled items that haven't expired is more likely
+  // a remote that answered wrongly than an inbox emptied by hand, so nothing is pruned
+  // for being missing; those items still go once they expire.
+  const pulledHere = items.filter((r) => fromRemote(r, remote))
+  const trustList = json.items.length > 0 || pulledHere.every((r) => isExpired(r, now))
+  const removed = pulledHere.filter((r) => isExpired(r, now) || (trustList && !remoteIds.has(r.id)))
+  const changedLocally = removed.filter((r) => r.status !== r.remote_status).map((r) => r.id)
   for (const r of removed) await removeScreenshot(r.screenshot_path)
   const gone = new Set(removed)
   await writeItems(items.filter((r) => !gone.has(r)))
@@ -240,6 +249,10 @@ async function pull() {
   if (removed.length) {
     const note = changedLocally.length ? ` (including ${changedLocally.join(', ')}, changed locally)` : ''
     console.log(`Removed ${removed.length} redline${removed.length === 1 ? '' : 's'} no longer here to fix (expired, purged, or sent back to To Review)${note}.`)
+  }
+  if (!trustList) {
+    const kept = pulledHere.length - removed.length
+    console.log(`The inbox listed nothing to fix, so ${kept} pulled redline${kept === 1 ? ' was' : 's were'} kept. They go when they expire, or when the inbox lists items again.`)
   }
 }
 
@@ -250,7 +263,7 @@ async function push() {
   let conflicts = 0
   try {
     for (const r of items) {
-      if (r.source !== 'remote' || r.status === r.remote_status) continue
+      if (!fromRemote(r, remote) || r.status === r.remote_status) continue
       const { status, json } = await sync(remote, {
         action: 'set_status',
         id: r.id,

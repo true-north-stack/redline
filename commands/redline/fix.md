@@ -45,7 +45,7 @@ For each redline:
 3. Read the relevant code
 4. Apply the fix
 5. Run `/redline:ux-review` on the changed component to validate against the UX Audit Framework — adjust the fix if the review flags issues
-6. Mark as fixed: read `redline/feedback.json`, update the matching entry's `status` to `'fixed'`, write the file back. Never edit `source`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
+6. Mark as fixed: read `redline/feedback.json`, update the matching entry's `status` to `'fixed'`, write the file back. Never edit `source`, `remote_host`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
 
 After all fixes, report what was done.
 

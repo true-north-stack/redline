@@ -12,7 +12,7 @@ allowed-tools:
 
 Storage: `redline/feedback.json` in the project root.
 
-Never edit `source`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
+Never edit `source`, `remote_host`, `remote_status` or `remote_status_updated_at` on any entry. The sync CLI owns them, and changing them breaks the next push or pull. Change only `status`.
 
 ## If argument is "list"
 
