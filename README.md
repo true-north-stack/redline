@@ -25,7 +25,7 @@ Leave as many redlines as you want. Fix them all at once.
 | `Esc` | Cancel/exit | Cancel selection, close modal, or deactivate inspector |
 | `Cmd+Enter` | Submit | Submit feedback from the modal |
 
-All triple-tap shortcuts work the same way — tap three times within 500ms. They won't trigger while typing in inputs or textareas, or with a modifier key held, and they stand down while a Redline dialog is open. `Ctrl+Enter` submits as well as `Cmd+Enter`.
+All triple-tap shortcuts work the same way: tap three times within 500ms. They won't trigger while typing in inputs or textareas, or with a modifier key held, and they stand down while a Redline dialog is open. `Ctrl+Enter` submits as well as `Cmd+Enter`.
 
 The listener ships with Redline as a hook. Call it where the inspector's on/off state lives:
 
@@ -74,7 +74,7 @@ Tapping a link while the inspector is on stages the link instead of following it
 
 ## First-run introduction
 
-The first time someone turns Redline on in a browser, a short introduction explains how to pick something and what happens next. Tick "Don't show this again" and it stays away; the choice lives in `localStorage` under `redline:intro:v1`, and if storage is blocked it shows again next time. Press `?` to reopen it, from the desktop pill or the touch bar.
+The first time someone turns Redline on in a browser, a short introduction explains how to pick something and what happens next. Tick "Don't show this again" and it stays away; the choice lives in `localStorage` under `redline:intro:v1`, and if storage is blocked it shows again next time. Click or tap the `?` button on the pill or the touch bar to reopen it.
 
 ## Features
 
