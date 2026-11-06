@@ -147,30 +147,59 @@ For testers on a deployed build. Feedback goes into the host's own Supabase proj
 - **Testers can't read anything back.** `anon` and `authenticated` get no grants, RLS is on with no policies, and the bucket has no storage policies. `GET /api/redlines` returns 404 in this mode.
 - **Every write needs a tester.** Implement `getTesterId()` in the route from your own server-side session. Requests without one get a 401.
 
-Setup:
+Setup has two parts. The first is the same everywhere. The second depends on where the database runs: a local stack from `supabase start`, or a hosted Supabase project. Do the local version while you develop and the hosted one when testers arrive. They don't share anything, so doing one never touches the other.
 
-1. Copy `supabase/migrations/*.sql` (four files) into your migrations (rename them with your own timestamps, keeping their order, since each builds on the one before) and apply them. The third one, `redline_inbox`, adds `status_updated_at`, `status_updated_by` and the index the admin inbox uses. The fourth, `redline_triage`, adds the To Review status that every tester submission starts in.
-2. Add `feedback` to the exposed schemas: Dashboard → Data API settings, or `schemas = [..., "feedback"]` under `[api]` in `config.toml`.
-3. Deploy the purge function: copy `supabase/functions/redline-purge/`, then `supabase functions deploy redline-purge --no-verify-jwt`.
-4. Pick a long random string and set it in both places:
-   ```bash
-   supabase secrets set REDLINE_PURGE_SECRET=<secret>
+**Everywhere:**
+
+1. Copy `supabase/migrations/*.sql` (four files) into your migrations (rename them with your own timestamps, keeping their order, since each builds on the one before). The third one, `redline_inbox`, adds `status_updated_at`, `status_updated_by` and the index the admin inbox uses. The fourth, `redline_triage`, adds the To Review status that every tester submission starts in.
+2. Add `feedback` to the exposed schemas: `schemas = [..., "feedback"]` under `[api]` in `supabase/config.toml` for a local stack, or Dashboard → Data API settings for a hosted project.
+3. Copy `supabase/functions/redline-purge/` and `supabase/functions/redline-sync/` into your `supabase/functions/`.
+4. Pick two long random strings (`openssl rand -hex 24` works), one for the purge function and one for the sync function. Keep them apart, since the sync secret goes on every dev machine and the purge secret never needs to.
+5. Set `storage: 'supabase'` in `redline.config.ts` once the steps for your database are done.
+
+**On a local stack** (nothing here reaches a hosted project):
+
+1. Apply the migrations the way you apply any other: `supabase migration up`, or `supabase db reset`.
+2. Put the function secrets in a gitignored env file, for example `supabase/functions/.env.redline`:
    ```
+   REDLINE_PURGE_SECRET=<purge secret>
+   REDLINE_SYNC_SECRET=<sync secret>
+   REDLINE_PUBLIC_URL=http://127.0.0.1:54321
+   ```
+   `REDLINE_PUBLIC_URL` is the API URL from `supabase status`. Inside a locally served function, `SUPABASE_URL` points at a container your machine can't reach, so screenshot links need this one.
+3. Serve the functions and leave it running while you work: `supabase functions serve --no-verify-jwt --env-file supabase/functions/.env.redline`. Without it, `pull`, `push` and the purge have nothing to talk to.
+4. Give the daily purge its address and secret, in the SQL editor of Studio or `psql`:
+   ```sql
+   select vault.create_secret('http://kong:8000', 'redline_purge_base_url');
+   select vault.create_secret('<purge secret>', 'redline_purge_secret');
+   ```
+   The purge runs inside the database container, where `127.0.0.1` is the container itself, so it reaches the functions through the stack's internal gateway at `http://kong:8000`, whatever ports your stack uses. These two secrets aren't part of a migration, so `supabase db reset` deletes them. Run this again after every reset, or the purge stops without an error.
+5. Create `.env.redline` in the project root (gitignored), pointing the CLI at the local stack:
+   ```
+   REDLINE_REMOTE_URL=http://127.0.0.1:54321
+   REDLINE_SYNC_SECRET=<sync secret>
+   ```
+
+**On a hosted project:**
+
+1. Apply the migrations with `supabase db push`, or however you ship migrations to that project.
+2. Deploy both functions and set their secrets:
+   ```bash
+   supabase functions deploy redline-purge --no-verify-jwt
+   supabase functions deploy redline-sync --no-verify-jwt
+   supabase secrets set REDLINE_PURGE_SECRET=<purge secret> REDLINE_SYNC_SECRET=<sync secret>
+   ```
+   Hosted functions see the right `SUPABASE_URL`, so `REDLINE_PUBLIC_URL` isn't needed.
+3. Give the daily purge its address and secret, in the project's SQL editor:
    ```sql
    select vault.create_secret('https://<project-ref>.supabase.co', 'redline_purge_base_url');
-   select vault.create_secret('<secret>', 'redline_purge_secret');
+   select vault.create_secret('<purge secret>', 'redline_purge_secret');
    ```
-5. Deploy the sync function the CLI uses: copy `supabase/functions/redline-sync/`, then `supabase functions deploy redline-sync --no-verify-jwt`. Give it its own secret, separate from the purge secret:
-   ```bash
-   supabase secrets set REDLINE_SYNC_SECRET=<secret>
-   ```
-   When you serve functions locally, `SUPABASE_URL` inside the function is container-internal, so also set `REDLINE_PUBLIC_URL` to the API URL your machine can reach. Hosted projects don't need it.
-6. On each machine that runs `/redline` against remote feedback, create `.env.redline` in the project root (gitignored) with the project that holds tester feedback:
+4. On each machine that runs `/redline` against tester feedback, create `.env.redline` in the project root (gitignored):
    ```
    REDLINE_REMOTE_URL=https://<project-ref>.supabase.co
-   REDLINE_SYNC_SECRET=<the secret from step 5>
+   REDLINE_SYNC_SECRET=<sync secret>
    ```
-7. Set `storage: 'supabase'` in `redline.config.ts`.
 
 The migration schedules `redline-purge` daily at 03:17 UTC with pg_cron. It deletes expired screenshots through the Storage API, then the rows. Deleting from `storage.objects` in SQL would leave the files behind. Retention is stamped on each item as `expires_at` when it's saved, so changing `retentionDays` affects new feedback only.
 
