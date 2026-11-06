@@ -227,3 +227,57 @@ test('a press that starts in the box and ends on the backdrop does not close it'
   await page.mouse.click(20, 20)
   await expect(feedbackBox(page)).toBeHidden()
 })
+
+const elementPreview = (page: Page) => page.getByTestId('redline-element-preview')
+
+test('a tester element pick shows the screenshot it will send; unticking hides it', async ({ page }) => {
+  await open(page, { audience: 'tester' })
+  await pickAndCapture(page, '#card')
+  await expect(elementPreview(page)).toBeVisible()
+  const shot = (await elementPreview(page).boundingBox())!
+  expect(shot.width).toBeGreaterThan(100)
+  expect(Math.round(shot.width)).toBeLessThanOrEqual(360)
+  expect(Math.round(shot.height)).toBeLessThanOrEqual(160)
+  // It shows the card: the page's grey, not an empty or dark canvas
+  const middle = await elementPreview(page).evaluate((c) => {
+    const canvas = c as HTMLCanvasElement
+    return Array.from(canvas.getContext('2d')!.getImageData(4, 4, 1, 1).data.slice(0, 3))
+  })
+  expect(middle).toEqual([221, 221, 221])
+
+  await screenshotBox(page).uncheck()
+  await expect(elementPreview(page)).toHaveCount(0)
+  await screenshotBox(page).check()
+  await expect(elementPreview(page)).toBeVisible()
+})
+
+test('a developer element pick shows no preview until Include Screenshot is ticked', async ({ page }) => {
+  await open(page, {})
+  await pickAndCapture(page, '#card')
+  await page.waitForTimeout(100)
+  await expect(elementPreview(page)).toHaveCount(0)
+  await screenshotBox(page).check()
+  await expect(elementPreview(page)).toBeVisible()
+})
+
+test('a capture that drops shows no preview', async ({ page }) => {
+  await open(page, { audience: 'tester', phiSelectors: ['[[not-a-selector'] })
+  await pickAndCapture(page, '#card', 'screenshot dropped')
+  await expect(page.getByText('Screenshot dropped: masking failed.')).toBeVisible()
+  await expect(elementPreview(page)).toHaveCount(0)
+})
+
+test('a preview from one pick never shows on the next', async ({ page }) => {
+  await open(page, { audience: 'tester' }, 1500)
+  await pickAndCapture(page, '#card')
+  await expect(elementPreview(page)).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  // The next pick's capture waits on the slow image. Ticked by hand meanwhile, the box
+  // still shows nothing until that capture lands: never the card from before.
+  const { settled } = await pick(page, '#slow')
+  await screenshotBox(page).check()
+  await page.waitForTimeout(200)
+  await expect(elementPreview(page)).toHaveCount(0)
+  await settled
+  await expect(elementPreview(page)).toBeVisible()
+})

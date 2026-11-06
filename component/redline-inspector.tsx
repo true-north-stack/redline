@@ -141,6 +141,32 @@ const BAR_ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
 // The feedback box's Cancel and Submit on touch: thumb-sized, sharing the row
 const TOUCH_BOX_BUTTON: CSSProperties = { flex: 1, minHeight: 48, fontSize: 16, borderRadius: 10, fontFamily: 'inherit' }
 
+/** The largest an element screenshot is shown in the feedback box, in CSS pixels. */
+const ELEMENT_PREVIEW_MAX_W = 360
+/** Element screenshots are captured at twice their CSS size. */
+const ELEMENT_CAPTURE_SCALE = 2
+const ELEMENT_PREVIEW_MAX_H = 160
+
+/**
+ * Draws an element capture (made at `srcScale` times its CSS size) into a preview canvas no
+ * bigger than the box allows, at its natural size when it's smaller, never upscaled.
+ */
+function drawElementPreview(el: HTMLCanvasElement | null, src: HTMLCanvasElement, srcScale: number) {
+  if (!el) return
+  const w = src.width / srcScale
+  const h = src.height / srcScale
+  const fit = Math.min(1, ELEMENT_PREVIEW_MAX_W / w, ELEMENT_PREVIEW_MAX_H / h)
+  const dpr = window.devicePixelRatio || 1
+  el.width = Math.max(1, Math.round(w * fit * dpr))
+  el.height = Math.max(1, Math.round(h * fit * dpr))
+  // A fixed width with automatic height keeps the shape when maxWidth narrows it
+  el.style.width = `${w * fit}px`
+  el.style.maxWidth = '100%'
+  el.style.height = 'auto'
+  el.style.display = 'block'
+  el.getContext('2d')?.drawImage(src, 0, 0, el.width, el.height)
+}
+
 /** What to tell the person when a save is refused. Says "try again" only when that can work. */
 async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promise<string> {
   if (res.status === 401) return 'Sign in to leave feedback.'
@@ -170,15 +196,19 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // The tester ticked or unticked Include Screenshot for this pick, so a capture finishing
   // afterwards leaves their choice alone
   const screenshotChosenRef = useRef(false)
+  // The element capture, kept in state with the element it belongs to so the box can show it
+  // and a capture for an earlier pick is never shown for the next one
+  const [elementShot, setElementShot] = useState<{ el: HTMLElement; canvas: HTMLCanvasElement } | null>(null)
   const [requestUxReview, setRequestUxReview] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const screenshotCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  // The current press went down on the feedback box's backdrop itself, and when the box
-  // last opened
+  // The current press went down, and was let go, on the feedback box's backdrop itself;
+  // and when the box last opened
   const backdropPressRef = useRef(false)
+  const backdropReleaseRef = useRef(false)
   const feedbackOpenedAtRef = useRef(0)
 
   // Area screenshot mode
@@ -683,10 +713,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setScreenshotDropped(false)
       try {
         const canvas = await captureMasked(selectedEl, masksKey.split('\n'), {
-          scale: 2,
+          scale: ELEMENT_CAPTURE_SCALE,
         })
         if (stale) return
         screenshotCanvasRef.current = canvas
+        setElementShot({ el: selectedEl, canvas })
         // Testers send the screenshot unless they say otherwise
         if (tester && !screenshotChosenRef.current) setIncludeScreenshot(true)
         console.log('[redline] screenshot captured:', canvas.width, 'x', canvas.height)
@@ -1386,14 +1417,19 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             // The second tap of a double tap on Comment lands here; it isn't a request to close
             backdropPressRef.current = e.target === e.currentTarget && performance.now() - feedbackOpenedAtRef.current > DOUBLE_TAP_MS
           }}
+          onPointerUp={(e) => {
+            e.stopPropagation()
+            backdropReleaseRef.current = e.target === e.currentTarget
+          }}
           onClick={(e) => {
             e.stopPropagation()
             // Closes only when the backdrop got both the press and the release, so a press
-            // that began on the bar or in the box (a text selection dragged out of it) doesn't
-            // throw the note away
-            const pressedHere = backdropPressRef.current
+            // that began on the bar or in the box (a text selection dragged out of it), or a
+            // press on the backdrop let go inside the box, doesn't throw the note away
+            const onBackdrop = backdropPressRef.current && backdropReleaseRef.current
             backdropPressRef.current = false
-            if (pressedHere && e.target === e.currentTarget) {
+            backdropReleaseRef.current = false
+            if (onBackdrop && e.target === e.currentTarget) {
               setSelectedEl(null)
               setAreaComplete(false)
               setAreaRect(null)
@@ -1499,6 +1535,17 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                   </div>
                 )}
               </>
+            )}
+
+            {/* Screenshot preview (element mode): exactly what will be sent, while ticked */}
+            {selectedEl && elementShot?.el === selectedEl && includeScreenshot && !screenshotDropped && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12, borderRadius: 6, overflow: 'hidden', border: '1px solid #333', backgroundColor: '#111' }}>
+                <canvas
+                  data-redline-ui
+                  data-testid="redline-element-preview"
+                  ref={(el) => drawElementPreview(el, elementShot.canvas, ELEMENT_CAPTURE_SCALE)}
+                />
+              </div>
             )}
 
             {/* Area info (area mode, developers) */}

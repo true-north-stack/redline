@@ -68,6 +68,11 @@ test('the box and its note fit the screen', async ({ page }) => {
   await captured
   await expect(page.getByText("What's wrong here?", { exact: true })).toBeVisible()
   await expect(page.getByLabel('Include Screenshot')).toBeChecked()
+  // The screenshot that will be sent is shown, small enough to keep the note on screen
+  await expect(page.getByTestId('redline-element-preview')).toBeVisible()
+  const shot = (await page.getByTestId('redline-element-preview').boundingBox())!
+  expect(Math.round(shot.height)).toBeLessThanOrEqual(160)
+  expect(shot.y + shot.height).toBeLessThan((await feedbackBox(page).boundingBox())!.y)
 
   const box = (await dialog(page).boundingBox())!
   const note = (await feedbackBox(page).boundingBox())!
@@ -105,4 +110,27 @@ test('a double tap on Comment leaves the box open', async ({ page }) => {
   await page.touchscreen.tap(x, y)
   await expect(feedbackBox(page)).toBeHidden()
   await expect(bar(page)).toBeVisible()
+})
+
+test('a press on the backdrop released inside the box leaves it open', async ({ page }) => {
+  await open(page)
+  await stageSave(page)
+  await barButton(page, 'Comment').tap()
+  await expect(feedbackBox(page)).toBeVisible()
+  await feedbackBox(page).fill('Half a thought')
+  // Past a double tap's window, so only where the press and release land decides
+  await page.waitForTimeout(600)
+
+  const note = (await feedbackBox(page).boundingBox())!
+  await page.mouse.move(20, 20)
+  await page.mouse.down()
+  await page.mouse.move(note.x + 20, note.y + 10, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForTimeout(100)
+  await expect(feedbackBox(page)).toBeVisible()
+  await expect(feedbackBox(page)).toHaveValue('Half a thought')
+
+  // Pressed and released on the backdrop: closes
+  await page.mouse.click(20, 20)
+  await expect(feedbackBox(page)).toBeHidden()
 })
