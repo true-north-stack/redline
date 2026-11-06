@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
 import { LIMITS, maskSelectors, sanitizePageUrl } from './redline-config'
 import { captureMasked, redactedText } from './redline-mask'
+import { TAP_SLOP_PX, defaultPickIndex, describeElement, pickPath } from './redline-touch'
 
 interface RedlineInspectorProps {
   active: boolean
@@ -20,6 +21,12 @@ interface AreaRect {
   startY: number
   endX: number
   endY: number
+}
+
+/** A touch pick waiting for Comment: candidates innermost first, and the one outlined. */
+interface StagedPick {
+  path: HTMLElement[]
+  index: number
 }
 
 function generateSelector(el: HTMLElement): string {
@@ -72,6 +79,37 @@ function coarsePointer(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
 }
 
+// Presses on Redline's own controls stop at Redline's root, so a host's "tap outside to
+// close" listener never closes the menu the tester is about to comment on
+const stopAtRedline = (e: SyntheticEvent) => e.stopPropagation()
+const KEEP_FROM_PAGE = {
+  onPointerDown: stopAtRedline,
+  onPointerUp: stopAtRedline,
+  onMouseDown: stopAtRedline,
+  onMouseUp: stopAtRedline,
+  onTouchStart: stopAtRedline,
+  onTouchEnd: stopAtRedline,
+  onClick: stopAtRedline,
+}
+
+// Bottom bar controls: thumb-sized, in the inspector's dark style
+const BAR_BUTTON: CSSProperties = {
+  minHeight: 44,
+  minWidth: 44,
+  padding: '0 16px',
+  borderRadius: 10,
+  border: '1px solid #333',
+  backgroundColor: 'transparent',
+  color: '#eee',
+  fontSize: 15,
+  fontWeight: 600,
+  fontFamily: 'inherit',
+  cursor: 'pointer',
+  flexShrink: 0,
+}
+const BAR_BUTTON_DISABLED: CSSProperties = { ...BAR_BUTTON, color: '#555', cursor: 'default' }
+const BAR_ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
+
 /** What to tell the person when a save is refused. Says "try again" only when that can work. */
 async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promise<string> {
   if (res.status === 401) return 'Sign in to leave feedback.'
@@ -121,6 +159,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // follows whatever pressed last, so a touchscreen laptop works with both
   const [touchUi, setTouchUi] = useState(() => active && coarsePointer())
 
+  // Touch picking: a tap stages a pick, Smaller and Bigger walk it, Comment selects it
+  const [staged, setStaged] = useState<StagedPick | null>(null)
+  // The outline glides to its next box on a step, and jumps when the page scrolls under it
+  const [outlineGlides, setOutlineGlides] = useState(false)
+  const [, setLayoutTick] = useState(0)
+
   // On activation, start in initialMode; on deactivation, clear everything. Adjusted while
   // rendering (React's pattern for state that follows a prop), not in an effect.
   const [seen, setSeen] = useState({ active, initialMode })
@@ -138,8 +182,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setMousePos(null)
       setHoveredEl(null)
       setSelectedEl(null)
+      setStaged(null)
     }
   }
+  // A pick the page has since removed has nothing left to comment on
+  if (staged && !staged.path[staged.index].isConnected) setStaged(null)
   useEffect(() => {
     if (!active) {
       draggingRef.current = false
@@ -171,9 +218,9 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   }
 
   // ---------------------------------------------------------------------------
-  // While on, the page never sees a press: pointerdown, mousedown, touchstart and click
-  // are stopped in the capture phase before host handlers (menus that open on
-  // pointerdown, links, buttons) react. Redline's own UI is left alone. touchstart is
+  // While on, the page never sees a press: pointerdown/up, mousedown/up, touchstart/end
+  // and click are stopped in the capture phase before host handlers (menus that open on
+  // pointerdown, links, buttons) react. Redline's own UI is left alone. Touch events are
   // passive and only stopped, so the page can still scroll under a finger.
   // ---------------------------------------------------------------------------
   useEffect(() => {
@@ -183,34 +230,55 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       return e.target instanceof Element && !!e.target.closest('[data-redline-ui]')
     }
 
+    // Touch controls follow the finger, desktop controls follow a mouse or pen
+    function followPointer(e: PointerEvent) {
+      const touch = e.pointerType === 'touch'
+      setTouchUi(touch)
+      if (touch) setHoveredEl(null)
+      else setStaged(null)
+    }
+
     function handlePress(e: Event) {
-      if (e instanceof PointerEvent && e.type === 'pointerdown') setTouchUi(e.pointerType === 'touch')
+      if (e.type === 'pointerdown') followPointer(e as PointerEvent)
       if (isRedlineUi(e)) return
       e.preventDefault()
       e.stopPropagation()
     }
 
-    function handleTouchStart(e: TouchEvent) {
+    function handleTouch(e: TouchEvent) {
       if (isRedlineUi(e)) return
       e.stopPropagation()
     }
 
+    // A mouse moving after a touch brings the pill and hover back
+    function handleMove(e: PointerEvent) {
+      if (e.pointerType !== 'touch') followPointer(e)
+    }
+
     document.addEventListener('pointerdown', handlePress, true)
+    document.addEventListener('pointerup', handlePress, true)
     document.addEventListener('mousedown', handlePress, true)
+    document.addEventListener('mouseup', handlePress, true)
     document.addEventListener('click', handlePress, true)
-    document.addEventListener('touchstart', handleTouchStart, { capture: true, passive: true })
+    document.addEventListener('touchstart', handleTouch, { capture: true, passive: true })
+    document.addEventListener('touchend', handleTouch, { capture: true, passive: true })
+    document.addEventListener('pointermove', handleMove, true)
 
     return () => {
       document.removeEventListener('pointerdown', handlePress, true)
+      document.removeEventListener('pointerup', handlePress, true)
       document.removeEventListener('mousedown', handlePress, true)
+      document.removeEventListener('mouseup', handlePress, true)
       document.removeEventListener('click', handlePress, true)
-      document.removeEventListener('touchstart', handleTouchStart, true)
+      document.removeEventListener('touchstart', handleTouch, true)
+      document.removeEventListener('touchend', handleTouch, true)
+      document.removeEventListener('pointermove', handleMove, true)
     }
   }, [active])
 
   // ---------------------------------------------------------------------------
-  // Element mode: hover tracking + release to select (mouse and pen; touch picking
-  // is separate)
+  // Element mode. Mouse and pen: hover tracking + release to select. Touch: only a
+  // true tap stages a pick; a finger that travels is a scroll and picks nothing.
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!active || mode !== 'element' || selectedEl) return
@@ -237,15 +305,49 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       return null
     }
 
+    // Where the current touch went down, until it travels too far or is cancelled
+    let tap: { id: number; x: number; y: number } | null = null
+    const travelled = (e: PointerEvent, from: { x: number; y: number }) =>
+      Math.hypot(e.clientX - from.x, e.clientY - from.y) > TAP_SLOP_PX
+
+    function handleDown(e: PointerEvent) {
+      if (e.pointerType !== 'touch' || !e.isPrimary) return
+      const onRedline = e.target instanceof Element && !!e.target.closest('[data-redline-ui]')
+      tap = onRedline ? null : { id: e.pointerId, x: e.clientX, y: e.clientY }
+    }
+
     function handleMove(e: PointerEvent) {
-      if (e.pointerType === 'touch') return
+      if (e.pointerType === 'touch') {
+        if (tap && e.pointerId === tap.id && travelled(e, tap)) tap = null
+        return
+      }
       const target = findBestTarget(e.clientX, e.clientY)
       setHoveredEl(target)
     }
 
+    function handleCancel(e: PointerEvent) {
+      if (tap && e.pointerId === tap.id) tap = null
+    }
+
+    function handleTapUp(e: PointerEvent) {
+      const start = tap
+      tap = null
+      if (!start || e.pointerId !== start.id || travelled(e, start)) return
+      const hit = document.elementFromPoint(e.clientX, e.clientY)
+      if (!hit || hit.closest('[data-redline-ui]')) return
+      // Tapping elsewhere moves the pick; tapping bare page drops it
+      const path = pickPath(hit)
+      setOutlineGlides(true)
+      setStaged(path.length ? { path, index: defaultPickIndex(path) } : null)
+    }
+
     function handleUp(e: PointerEvent) {
+      if (e.pointerType === 'touch') {
+        handleTapUp(e)
+        return
+      }
       // A primary-button release, as a click would be; the click itself is stopped above
-      if (e.pointerType === 'touch' || !e.isPrimary || e.button !== 0) return
+      if (!e.isPrimary || e.button !== 0) return
       const el = e.target as HTMLElement
       if (el.closest('[data-redline-ui]')) return
 
@@ -259,14 +361,45 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       }
     }
 
+    document.addEventListener('pointerdown', handleDown, true)
     document.addEventListener('pointermove', handleMove, true)
+    document.addEventListener('pointercancel', handleCancel, true)
     document.addEventListener('pointerup', handleUp, true)
 
     return () => {
+      document.removeEventListener('pointerdown', handleDown, true)
       document.removeEventListener('pointermove', handleMove, true)
+      document.removeEventListener('pointercancel', handleCancel, true)
       document.removeEventListener('pointerup', handleUp, true)
     }
   }, [active, mode, selectedEl])
+
+  // Keep the pick outline on its element while the page scrolls or resizes under it
+  const hasStaged = !!staged
+  useEffect(() => {
+    if (!hasStaged) return
+    function follow() {
+      setOutlineGlides(false)
+      setLayoutTick((n) => n + 1)
+    }
+    window.addEventListener('scroll', follow, { capture: true, passive: true })
+    window.addEventListener('resize', follow)
+    return () => {
+      window.removeEventListener('scroll', follow, true)
+      window.removeEventListener('resize', follow)
+    }
+  }, [hasStaged])
+
+  // The staged pick in plain words for the bar; masked text never appears
+  const stagedEl = staged ? staged.path[staged.index] : null
+  const stagedName = useMemo(() => {
+    if (!stagedEl) return null
+    try {
+      return describeElement(stagedEl, masksKey.split('\n'))
+    } catch {
+      return 'This part of the page'
+    }
+  }, [stagedEl, masksKey])
 
   // Capture area screenshot
   const captureArea = useCallback(async (area: AreaRect) => {
@@ -426,6 +559,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           setAreaRect(null)
           draggingRef.current = false
           areaStartRef.current = null
+        } else if (staged) {
+          setStaged(null)
         } else {
           onDeactivate()
         }
@@ -433,6 +568,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
       if (e.key === 's' && !showingFeedback) {
         e.preventDefault()
+        setStaged(null)
         setMode((prev: InspectorMode) => {
           const next: InspectorMode = prev === 'element' ? 'area' : 'element'
           // Clear state from the other mode
@@ -446,7 +582,36 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [active, selectedEl, areaComplete, dragging, showingFeedback, onDeactivate])
+  }, [active, selectedEl, areaComplete, dragging, staged, showingFeedback, onDeactivate])
+
+  // The bar's Element / Area switch
+  const chooseMode = useCallback((next: InspectorMode) => {
+    resetAreaDrag()
+    setStaged(null)
+    setHoveredEl(null)
+    setMousePos(null)
+    setMode(next)
+  }, [resetAreaDrag])
+
+  // Smaller walks the pick inward, Bigger outward; both stop at the ends of the path
+  const stepPick = useCallback((by: 1 | -1) => {
+    setOutlineGlides(true)
+    setStaged((prev) => {
+      if (!prev) return prev
+      const index = Math.min(prev.path.length - 1, Math.max(0, prev.index + by))
+      return index === prev.index ? prev : { ...prev, index }
+    })
+  }, [])
+
+  // Comment hands the pick to the usual flow: screenshot, then the feedback box
+  const commentOnPick = useCallback(() => {
+    if (!stagedEl) return
+    setSelectedEl(stagedEl)
+    setStaged(null)
+  }, [stagedEl])
+
+  // Shows the introduction again (Task 8 wires this to it)
+  const openIntro = () => {}
 
   // Submit handler — works for both element and area modes
   const handleSubmit = useCallback(async () => {
@@ -537,17 +702,24 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Dimensions tooltip for area drag
   const dimLabel = areaNorm && dragging ? `${areaNorm.w} × ${areaNorm.h}` : null
 
+  // The staged pick's box, read fresh each render (a step, a scroll, a resize)
+  const stagedRect = mode === 'element' && !selectedEl ? stagedEl?.getBoundingClientRect() : undefined
+  const pickCount = staged?.path.length ?? 0
+  const canShrink = !!staged && staged.index > 0
+  const canGrow = !!staged && staged.index < pickCount - 1
+
   return (
     <>
       {/* Cursor overlay */}
       <style>{`
-        ${active && !showingFeedback ? '* { cursor: crosshair !important; }' : ''}
+        ${active && !showingFeedback ? '* { cursor: crosshair !important; } [data-redline-ui] button { cursor: pointer !important; }' : ''}
       `}</style>
 
-      {/* Mode indicator pill */}
-      {!showingFeedback && (
+      {/* Mode indicator pill (mouse and pen) */}
+      {!showingFeedback && !touchUi && (
         <div
           data-redline-ui
+          {...KEEP_FROM_PAGE}
           style={{
             position: 'fixed',
             top: 12,
@@ -589,6 +761,160 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           <span style={{ color: '#555', fontSize: 10 }}>
             to switch
           </span>
+          <button
+            type="button"
+            data-redline-ui
+            aria-label="Show introduction"
+            title="Show introduction"
+            onClick={openIntro}
+            style={{
+              marginLeft: 2,
+              width: 18,
+              height: 18,
+              padding: 0,
+              borderRadius: '50%',
+              border: '1px solid #333',
+              backgroundColor: '#222',
+              color: '#888',
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: 'inherit',
+              lineHeight: '16px',
+              cursor: 'pointer',
+            }}
+          >
+            ?
+          </button>
+        </div>
+      )}
+
+      {/* Touch bottom bar, in place of the pill, in the thumb zone */}
+      {!showingFeedback && touchUi && (
+        <div
+          data-redline-ui
+          data-testid="redline-touch-bar"
+          {...KEEP_FROM_PAGE}
+          style={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 99999,
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            padding: '12px 12px calc(12px + env(safe-area-inset-bottom))',
+            backgroundColor: '#1a1a1a',
+            borderTop: '1px solid #333',
+            boxShadow: '0 -8px 24px rgba(0,0,0,0.35)',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            touchAction: 'manipulation',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          {staged ? (
+            <>
+              <div style={BAR_ROW}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span aria-hidden style={{ width: 12, height: 12, flexShrink: 0, boxSizing: 'border-box', border: '2px solid #ef4444', borderRadius: 3 }} />
+                  <span
+                    data-testid="redline-pick-name"
+                    aria-live="polite"
+                    style={{ color: '#eee', fontSize: 16, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    {stagedName}
+                  </span>
+                </div>
+                <button type="button" data-redline-ui onClick={() => setStaged(null)} style={BAR_BUTTON}>
+                  Cancel
+                </button>
+              </div>
+              <div style={BAR_ROW}>
+                <button
+                  type="button"
+                  data-redline-ui
+                  disabled={!canShrink}
+                  onClick={() => stepPick(-1)}
+                  style={{ ...(canShrink ? BAR_BUTTON : BAR_BUTTON_DISABLED), minHeight: 52 }}
+                >
+                  Smaller
+                </button>
+                <button
+                  type="button"
+                  data-redline-ui
+                  disabled={!canGrow}
+                  onClick={() => stepPick(1)}
+                  style={{ ...(canGrow ? BAR_BUTTON : BAR_BUTTON_DISABLED), minHeight: 52 }}
+                >
+                  Bigger
+                </button>
+                <button
+                  type="button"
+                  data-redline-ui
+                  onClick={commentOnPick}
+                  style={{ ...BAR_BUTTON, flex: 1, minHeight: 52, border: 'none', backgroundColor: '#ef4444', color: 'white', fontSize: 17, fontWeight: 700 }}
+                >
+                  Comment
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={BAR_ROW}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span
+                    aria-hidden
+                    style={{ width: 8, height: 8, flexShrink: 0, borderRadius: '50%', backgroundColor: '#ef4444', animation: 'redline-pulse 2s ease-in-out infinite' }}
+                  />
+                  <span style={{ color: '#aaa', fontSize: 15 }}>
+                    {mode === 'element' ? 'Tap what you want to comment on.' : 'Drag to draw a box.'}
+                  </span>
+                </div>
+                <button type="button" data-redline-ui onClick={() => onDeactivate()} style={BAR_BUTTON}>
+                  Done
+                </button>
+              </div>
+              <div style={BAR_ROW}>
+                <div
+                  role="group"
+                  aria-label="What to pick"
+                  style={{ flex: 1, display: 'flex', gap: 3, padding: 3, backgroundColor: '#111', border: '1px solid #333', borderRadius: 12 }}
+                >
+                  {(['element', 'area'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      data-redline-ui
+                      aria-pressed={mode === m}
+                      onClick={() => chooseMode(m)}
+                      style={{
+                        ...BAR_BUTTON,
+                        flex: 1,
+                        border: 'none',
+                        borderRadius: 9,
+                        backgroundColor: mode === m ? '#333' : 'transparent',
+                        color: mode === m ? '#eee' : '#888',
+                      }}
+                    >
+                      {m === 'element' ? 'Element' : 'Area'}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  data-redline-ui
+                  aria-label="Show introduction"
+                  onClick={openIntro}
+                  style={{ ...BAR_BUTTON, width: 52, minHeight: 52, padding: 0, borderRadius: '50%', color: '#aaa', fontSize: 18 }}
+                >
+                  ?
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -599,6 +925,28 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           50% { opacity: 0.3; }
         }
       `}</style>
+
+      {/* Touch pick outline: glides between Smaller and Bigger steps */}
+      {stagedRect && (
+        <div
+          data-redline-ui
+          data-testid="redline-pick-outline"
+          style={{
+            position: 'fixed',
+            top: stagedRect.top - 2,
+            left: stagedRect.left - 2,
+            width: stagedRect.width + 4,
+            height: stagedRect.height + 4,
+            boxSizing: 'border-box',
+            border: '2px solid #ef4444',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            borderRadius: 4,
+            pointerEvents: 'none',
+            zIndex: 99998,
+            transition: outlineGlides ? 'top 150ms ease-out, left 150ms ease-out, width 150ms ease-out, height 150ms ease-out' : 'none',
+          }}
+        />
+      )}
 
       {/* ------------------------------------------------------------------ */}
       {/* Element mode overlays                                               */}
@@ -737,6 +1085,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {showingFeedback && (
         <div
           data-redline-ui
+          {...KEEP_FROM_PAGE}
           style={{
             position: 'fixed',
             inset: 0,
@@ -747,6 +1096,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             backgroundColor: 'rgba(0,0,0,0.5)',
           }}
           onClick={(e) => {
+            e.stopPropagation()
             if (e.target === e.currentTarget) {
               setSelectedEl(null)
               setAreaComplete(false)
