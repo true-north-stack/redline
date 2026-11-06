@@ -16,7 +16,8 @@ if (!props.showIntro) {
 }
 
 function Harness() {
-  const [active, setActive] = useState(true)
+  // startActive false loads the page with Redline off, as a host does before its toggle
+  const [active, setActive] = useState(props.startActive ?? true)
   // The host's own toggle, for tests that turn Redline off or on from outside
   useEffect(() => {
     (window as any).__redlineSetActive = setActive

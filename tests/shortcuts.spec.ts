@@ -85,3 +85,23 @@ test('enabled false listens to nothing', async ({ page }) => {
   await page.keyboard.type('eee')
   expect(await activations(page)).toEqual([])
 })
+
+test('keys inside a Redline dialog do nothing', async ({ page }) => {
+  await load(page)
+  // The introduction is open with focus on its button
+  await page.getByTestId('dialog-button').focus()
+  await page.keyboard.type('rrr')
+  await page.keyboard.type('eee')
+  expect(await activations(page)).toEqual([])
+  // A keydown aimed at the page while focus sits in the dialog is ignored too
+  await page.evaluate(() => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
+  })
+  expect(await activations(page)).toEqual([])
+  // Outside the dialog the keys work again
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur())
+  await page.keyboard.type('rrr')
+  expect(await activations(page)).toEqual(['element'])
+})

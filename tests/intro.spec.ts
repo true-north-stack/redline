@@ -172,7 +172,8 @@ test('Esc closes and does not bubble', async ({ page }) => {
 
 test('focus stays inside the dialog', async ({ page }) => {
   await load(page)
-  await expect(dialog(page).getByRole('button', { name: 'Close' })).toBeFocused()
+  // The primary button, not ×: a ring on × reads as a highlighted close
+  await expect(next(page)).toBeFocused()
   const inside = () => page.evaluate(() => !!document.activeElement?.closest('[role=dialog]'))
   for (let i = 0; i < 10; i++) {
     await page.keyboard.press('Tab')

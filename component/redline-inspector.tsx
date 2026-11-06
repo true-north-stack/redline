@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
 import { LIMITS, maskSelectors, sanitizePageUrl } from './redline-config'
 import { captureMasked, redactedText } from './redline-mask'
 import { TAP_SLOP_PX, defaultPickIndex, describeElement, pickPath } from './redline-touch'
+import { RedlineIntro, introDismissed } from './redline-intro'
 
 interface RedlineInspectorProps {
   active: boolean
@@ -185,7 +186,7 @@ async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promi
   return `Couldn't save your feedback (${res.status}). Try again.`
 }
 
-export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors, audience = 'developer' }: RedlineInspectorProps) {
+export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors, audience = 'developer', shortcuts = true }: RedlineInspectorProps) {
   const tester = audience === 'tester'
   const [hoveredEl, setHoveredEl] = useState<HTMLElement | null>(null)
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
@@ -251,6 +252,14 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const [outlineGlides, setOutlineGlides] = useState(false)
   const [, setLayoutTick] = useState(0)
 
+  // The introduction: opens the first time Redline turns on in this browser (until "Don't
+  // show this again"), and from ?. While open it's all the inspector shows.
+  const [introOpen, setIntroOpen] = useState(() => active && !introDismissed())
+  // Where focus goes back to when it closes: what was focused when it opened
+  const introReturnRef = useRef<Element | null>(null)
+  // The ? on screen (pill or bar), which takes focus when that element is gone
+  const helpRef = useRef<HTMLButtonElement>(null)
+
   // On activation, start in initialMode; on deactivation, clear everything. Adjusted while
   // rendering (React's pattern for state that follows a prop), not in an effect.
   const [seen, setSeen] = useState({ active, initialMode })
@@ -258,7 +267,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     setSeen({ active, initialMode })
     if (active) {
       setMode(initialMode)
-      if (!seen.active) setTouchUi(coarsePointer())
+      if (!seen.active) {
+        setTouchUi(coarsePointer())
+        setIntroOpen(!introDismissed())
+      }
     } else {
       setMode('element')
       setDragging(false)
@@ -271,6 +283,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setStaged(null)
       setAreaDraft(null)
       setCapturingDraft(false)
+      setIntroOpen(false)
     }
   }
   // A pick the page has since removed has nothing left to comment on
@@ -312,6 +325,32 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     if (!showingFeedback) setSubmitError(null)
   }
 
+  // Opening from ?: focus comes back to the ? on screen once it closes
+  const openIntro = useCallback(() => {
+    introReturnRef.current = helpRef.current
+    setHoveredEl(null)
+    setIntroOpen(true)
+  }, [])
+
+  const closeIntro = useCallback(() => setIntroOpen(false), [])
+
+  // Note what was focused as the introduction opens on activation, before it takes focus
+  useLayoutEffect(() => {
+    if (introOpen && !introReturnRef.current) introReturnRef.current = document.activeElement
+  }, [introOpen])
+
+  // Once it closes, focus goes back where it was, or to the ? if that element is gone. A
+  // host button that removes itself on click has already left focus on the body by the
+  // time Redline renders, so the body counts as gone.
+  useEffect(() => {
+    if (introOpen) return
+    const back = introReturnRef.current
+    introReturnRef.current = null
+    if (!back || !active) return
+    if (back instanceof HTMLElement && back !== document.body && back.isConnected) back.focus()
+    else helpRef.current?.focus()
+  }, [introOpen, active])
+
   // ---------------------------------------------------------------------------
   // While on, the page never sees a press: pointerdown/up, mousedown/up, touchstart/end
   // and click are stopped in the capture phase before host handlers (menus that open on
@@ -325,8 +364,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       return e.target instanceof Element && !!e.target.closest('[data-redline-ui]')
     }
 
-    // Touch controls follow the finger, desktop controls follow a mouse or pen
+    // Touch controls follow the finger, desktop controls follow a mouse or pen. The
+    // introduction keeps the version it opened with, so a tap on it can't reshape it.
     function followPointer(e: PointerEvent) {
+      if (introOpen) return
       const touch = e.pointerType === 'touch'
       setTouchUi(touch)
       if (touch) setHoveredEl(null)
@@ -338,7 +379,15 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
 
     function handlePress(e: Event) {
-      if (e.type === 'pointerdown') followPointer(e as PointerEvent)
+      if (e.type === 'pointerdown') {
+        const p = e as PointerEvent
+        followPointer(p)
+        // A finger on the pill's ? swaps the pill for the bar before the ? could be
+        // clicked, so the press itself opens the introduction (in its touch version)
+        if (p.pointerType === 'touch' && p.target instanceof Element && p.target.closest('[data-redline-help="pill"]')) {
+          openIntro()
+        }
+      }
       if (isRedlineUi(e)) return
       e.preventDefault()
       e.stopPropagation()
@@ -373,14 +422,14 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       document.removeEventListener('touchend', handleTouch, true)
       document.removeEventListener('pointermove', handleMove, true)
     }
-  }, [active])
+  }, [active, introOpen, openIntro])
 
   // ---------------------------------------------------------------------------
   // Element mode. Mouse and pen: hover tracking + release to select. Touch: only a
   // true tap stages a pick; a finger that travels is a scroll and picks nothing.
   // ---------------------------------------------------------------------------
   useEffect(() => {
-    if (!active || mode !== 'element' || selectedEl) return
+    if (!active || mode !== 'element' || selectedEl || introOpen) return
 
     function isInteresting(el: HTMLElement): boolean {
       if (el === document.body || el === document.documentElement) return false
@@ -471,7 +520,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       document.removeEventListener('pointercancel', handleCancel, true)
       document.removeEventListener('pointerup', handleUp, true)
     }
-  }, [active, mode, selectedEl])
+  }, [active, mode, selectedEl, introOpen])
 
   // Keep the pick outline on its element while the page scrolls or resizes under it
   const hasStaged = !!staged
@@ -688,8 +737,9 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
   // While drawing by touch nothing on the page may scroll or zoom. The overlay, handles
   // and bar refuse panning with touch-action; this catches what touch-action misses
-  // (older iOS Safari). Lifted the moment Area mode ends, however it ends.
-  const drawing = active && mode === 'area' && !showingFeedback
+  // (older iOS Safari). Lifted the moment Area mode ends, however it ends, and while the
+  // introduction is open so it can scroll on a small phone.
+  const drawing = active && mode === 'area' && !showingFeedback && !introOpen
   useEffect(() => {
     if (!drawing) return
     const refuse = (e: Event) => e.preventDefault()
@@ -744,6 +794,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   useEffect(() => {
     if (!active) return
     function handleKey(e: KeyboardEvent) {
+      // The introduction has the keyboard while it's open; its own Esc never reaches here
+      if (introOpen) return
       // Don't intercept keys when typing in the feedback textarea
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'TEXTAREA' || tag === 'INPUT') return
@@ -784,7 +836,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [active, selectedEl, areaComplete, dragging, areaDraft, capturingDraft, staged, showingFeedback, onDeactivate, resetAreaDrag])
+  }, [active, introOpen, selectedEl, areaComplete, dragging, areaDraft, capturingDraft, staged, showingFeedback, onDeactivate, resetAreaDrag])
 
   // The bar's Element / Area switch
   const chooseMode = useCallback((next: InspectorMode) => {
@@ -812,9 +864,6 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     setSelectedEl(stagedEl)
     setStaged(null)
   }, [stagedEl])
-
-  // Shows the introduction again (Task 8 wires this to it)
-  const openIntro = () => {}
 
   // Submit handler — works for both element and area modes
   const handleSubmit = useCallback(async () => {
@@ -889,6 +938,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
   if (!active) return null
 
+  // Picking controls and overlays show only while neither the feedback box nor the
+  // introduction is up
+  const picking = !showingFeedback && !introOpen
+
   // Compute element highlight rect
   const targetEl = selectedEl || hoveredEl
   const elRect = targetEl?.getBoundingClientRect()
@@ -917,7 +970,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   const showHandles = showDraft && !capturingDraft
 
   // The staged pick's box, read fresh each render (a step, a scroll, a resize)
-  const stagedRect = mode === 'element' && !selectedEl ? stagedEl?.getBoundingClientRect() : undefined
+  const stagedRect = mode === 'element' && !selectedEl && !introOpen ? stagedEl?.getBoundingClientRect() : undefined
   const pickCount = staged?.path.length ?? 0
   const canShrink = !!staged && staged.index > 0
   const canGrow = !!staged && staged.index < pickCount - 1
@@ -927,11 +980,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {/* Cursor overlay. While picking, a long press can't open the browser's link
           preview or start a text selection on the page. */}
       <style>{`
-        ${active && !showingFeedback ? '* { cursor: crosshair !important; -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; } [data-redline-ui] button { cursor: pointer !important; }' : ''}
+        ${picking ? '* { cursor: crosshair !important; -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; } [data-redline-ui] button { cursor: pointer !important; }' : ''}
       `}</style>
 
       {/* Mode indicator pill (mouse and pen) */}
-      {!showingFeedback && !touchUi && (
+      {picking && !touchUi && (
         <div
           data-redline-ui
           {...KEEP_FROM_PAGE}
@@ -977,8 +1030,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             to switch
           </span>
           <button
+            ref={helpRef}
             type="button"
             data-redline-ui
+            data-redline-help="pill"
             aria-label="Show introduction"
             title="Show introduction"
             onClick={openIntro}
@@ -1004,7 +1059,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       )}
 
       {/* Touch bar, in place of the pill, in the thumb zone (or docked at the top) */}
-      {!showingFeedback && touchUi && (
+      {picking && touchUi && (
         <div
           ref={barRef}
           data-redline-ui
@@ -1176,6 +1231,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                   </svg>
                 </button>
                 <button
+                  ref={helpRef}
                   type="button"
                   data-redline-ui
                   aria-label="Show introduction"
@@ -1223,7 +1279,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {/* ------------------------------------------------------------------ */}
       {/* Element mode overlays                                               */}
       {/* ------------------------------------------------------------------ */}
-      {mode === 'element' && elRect && targetEl && (
+      {mode === 'element' && !introOpen && elRect && targetEl && (
         <>
           {/* Highlight overlay */}
           <div
@@ -1273,7 +1329,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {/* ------------------------------------------------------------------ */}
       {/* Area mode overlays                                                  */}
       {/* ------------------------------------------------------------------ */}
-      {mode === 'area' && !areaComplete && (
+      {mode === 'area' && !areaComplete && !introOpen && (
         <>
           {/* Interaction overlay — captures all pointer events so page elements
               (dropdowns, menus, etc.) don't receive pointerdown/blur and stay open.
@@ -1394,6 +1450,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             </div>
           )}
         </>
+      )}
+
+      {introOpen && (
+        <RedlineIntro audience={audience} touch={touchUi} shortcuts={shortcuts} onClose={closeIntro} />
       )}
 
       {/* ------------------------------------------------------------------ */}

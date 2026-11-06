@@ -17,6 +17,14 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
 }
 
+const REDLINE_DIALOG = '[role="dialog"][data-redline-ui]'
+
+/** While Redline's own dialog (the introduction) is open, keys belong to it. */
+function inRedlineDialog(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest(REDLINE_DIALOG)) return true
+  return !!document.activeElement?.closest(REDLINE_DIALOG)
+}
+
 export function useRedlineShortcuts(
   onActivate: (mode: RedlineShortcutMode) => void,
   options?: { enabled?: boolean },
@@ -38,7 +46,7 @@ export function useRedlineShortcuts(
         times = []
         return
       }
-      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || inRedlineDialog(e.target)) return
 
       if (e.key !== key) {
         key = e.key

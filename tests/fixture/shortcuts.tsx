@@ -12,6 +12,9 @@ function Harness() {
     <div>
       <input data-testid="field" />
       <div data-testid="editable" contentEditable suppressContentEditableWarning />
+      <div role="dialog" data-redline-ui>
+        <button data-testid="dialog-button">Next</button>
+      </div>
     </div>
   )
 }

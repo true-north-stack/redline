@@ -226,7 +226,6 @@ export function RedlineIntro({ audience, touch, shortcuts, onClose }: RedlineInt
   const [dontShow, setDontShow] = useState(false)
   const titleId = useId()
   const dialogRef = useRef<HTMLDivElement>(null)
-  const closeRef = useRef<HTMLButtonElement>(null)
   const nextRef = useRef<HTMLButtonElement>(null)
 
   const tester = audience === 'tester'
@@ -234,10 +233,11 @@ export function RedlineIntro({ audience, touch, shortcuts, onClose }: RedlineInt
   const current = Math.min(page, pages.length - 1)
   const last = current === pages.length - 1
 
-  // Move focus into the dialog when it opens, and hand it back when it closes
+  // Move focus into the dialog when it opens, onto the way forward (a ring on × reads as a
+  // highlighted close), and hand it back when it closes
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    closeRef.current?.focus()
+    nextRef.current?.focus()
     return () => {
       if (previous && previous.isConnected) previous.focus()
     }
@@ -326,7 +326,7 @@ export function RedlineIntro({ audience, touch, shortcuts, onClose }: RedlineInt
         <div className="rl-intro-head">
           <span className="rl-intro-dot" />
           <span className="rl-intro-brand">Redline</span>
-          <button ref={closeRef} type="button" className="rl-intro-x" aria-label="Close" onClick={close}>
+          <button type="button" className="rl-intro-x" aria-label="Close" onClick={close}>
             ×
           </button>
         </div>
@@ -497,7 +497,7 @@ const INTRO_CSS = `
   border: 2px dashed #ef4444; background: rgba(239,68,68,.10); border-radius: 3px;
 }
 .rl-intro-finger { position: absolute; width: 0; height: 0; }
-.rl-intro-finger-pick { left: 148px; top: 104px; }
+.rl-intro-finger-pick { left: 158px; top: 110px; }
 .rl-intro-finger-drag { left: 138px; top: 70px; }
 .rl-intro-finger::before {
   content: ""; position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%;
@@ -608,8 +608,9 @@ const INTRO_CSS = `
   32%, 41% { left: 77px; top: 92px; }
   47%, 50% { left: 94px; top: 104px; }
   58%, 67% { left: 133px; top: 92px; }
-  73%, 84% { opacity: 1; left: 148px; top: 104px; }
-  90%, 100% { opacity: 0; left: 148px; top: 104px; }
+  /* After the tap the finger rests below and right of Comment, so its label stays readable */
+  73%, 84% { opacity: 1; left: 158px; top: 110px; }
+  90%, 100% { opacity: 0; left: 158px; top: 110px; }
 }
 @keyframes rl-intro-press3 {
   0%, 14%, 19%, 37%, 42%, 63%, 68%, 100% { transform: scale(1); }
