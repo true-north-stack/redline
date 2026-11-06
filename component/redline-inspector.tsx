@@ -12,6 +12,13 @@ interface RedlineInspectorProps {
   initialMode?: InspectorMode
   /** Extra selectors to mask in screenshots and captured text, on top of [data-phi] */
   phiSelectors?: string[]
+  /**
+   * Who leaves the feedback. Testers get plain wording (no selector, no UX review option, no
+   * keyboard hints) and an element screenshot ticked by default. Defaults to 'developer'.
+   */
+  audience?: 'tester' | 'developer'
+  /** Whether the host has Redline's keyboard shortcuts, so the introduction can teach them. Defaults to true. */
+  shortcuts?: boolean
 }
 
 type InspectorMode = 'element' | 'area'
@@ -31,6 +38,8 @@ const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
 const MIN_AREA_PX = 20
 /** How far a touch box keeps from the bar, so the handles on that side stay in reach. */
 const BAR_CLEARANCE_PX = 12
+/** A press this soon after the feedback box opens is the second half of a double tap. */
+const DOUBLE_TAP_MS = 500
 
 /** A touch pick waiting for Comment: candidates innermost first, and the one outlined. */
 interface StagedPick {
@@ -129,6 +138,9 @@ const BAR_COMMENT: CSSProperties = {
 }
 const BAR_ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
 
+// The feedback box's Cancel and Submit on touch: thumb-sized, sharing the row
+const TOUCH_BOX_BUTTON: CSSProperties = { flex: 1, minHeight: 48, fontSize: 16, borderRadius: 10, fontFamily: 'inherit' }
+
 /** What to tell the person when a save is refused. Says "try again" only when that can work. */
 async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promise<string> {
   if (res.status === 401) return 'Sign in to leave feedback.'
@@ -147,19 +159,27 @@ async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promi
   return `Couldn't save your feedback (${res.status}). Try again.`
 }
 
-export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors }: RedlineInspectorProps) {
+export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors, audience = 'developer' }: RedlineInspectorProps) {
+  const tester = audience === 'tester'
   const [hoveredEl, setHoveredEl] = useState<HTMLElement | null>(null)
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
   const [feedback, setFeedback] = useState('')
   const [includeScreenshot, setIncludeScreenshot] = useState(false)
   // Masking or capture failed for the current selection: no screenshot can be attached
   const [screenshotDropped, setScreenshotDropped] = useState(false)
+  // The tester ticked or unticked Include Screenshot for this pick, so a capture finishing
+  // afterwards leaves their choice alone
+  const screenshotChosenRef = useRef(false)
   const [requestUxReview, setRequestUxReview] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const screenshotCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // The current press went down on the feedback box's backdrop itself, and when the box
+  // last opened
+  const backdropPressRef = useRef(false)
+  const feedbackOpenedAtRef = useRef(0)
 
   // Area screenshot mode
   const [mode, setMode] = useState<InspectorMode>(active ? initialMode : 'element')
@@ -250,6 +270,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
   // Whether the feedback modal is showing
   const showingFeedback = !!(selectedEl || areaComplete)
+
+  useEffect(() => {
+    if (showingFeedback) feedbackOpenedAtRef.current = performance.now()
+  }, [showingFeedback])
 
   // Clear a stale submit error whenever the modal closes
   const [wasShowing, setWasShowing] = useState(showingFeedback)
@@ -650,6 +674,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       return
     }
 
+    // A capture for a pick that has since closed or changed must not touch the next one
+    let stale = false
+    screenshotChosenRef.current = false
+
     async function captureElement() {
       if (!selectedEl) return
       setScreenshotDropped(false)
@@ -657,9 +685,13 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         const canvas = await captureMasked(selectedEl, masksKey.split('\n'), {
           scale: 2,
         })
+        if (stale) return
         screenshotCanvasRef.current = canvas
+        // Testers send the screenshot unless they say otherwise
+        if (tester && !screenshotChosenRef.current) setIncludeScreenshot(true)
         console.log('[redline] screenshot captured:', canvas.width, 'x', canvas.height)
       } catch (err) {
+        if (stale) return
         // Masking or capture failed: drop the screenshot rather than send it unmasked
         console.warn('[redline] screenshot dropped:', err)
         screenshotCanvasRef.current = null
@@ -672,7 +704,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
     captureElement()
     setTimeout(() => inputRef.current?.focus(), 50)
-  }, [selectedEl, areaComplete, masksKey])
+    return () => {
+      stale = true
+    }
+  }, [selectedEl, areaComplete, masksKey, tester])
 
   // Keyboard: Escape to cancel, 's' to toggle mode
   useEffect(() => {
@@ -835,6 +870,12 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
     typeof window !== 'undefined'
       ? sanitizePageUrl(window.location.pathname + window.location.search + window.location.hash)
       : ''
+
+  // The box's checkboxes: as on desktop, or a full 44px row a thumb can hit
+  const checkLabel: CSSProperties = touchUi
+    ? { display: 'flex', alignItems: 'center', gap: 10, minHeight: 44, fontSize: 15, color: '#aaa', cursor: 'pointer', userSelect: 'none' }
+    : { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }
+  const checkBox: CSSProperties = touchUi ? { accentColor: '#ef4444', width: 20, height: 20, margin: 0 } : { accentColor: '#ef4444' }
 
   // Dimensions tooltip for a mouse drag (a finger would cover it)
   const dimLabel = areaNorm && dragging && !touchUi ? `${areaNorm.w} × ${areaNorm.h}` : null
@@ -1340,9 +1381,19 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             justifyContent: 'center',
             backgroundColor: 'rgba(0,0,0,0.5)',
           }}
+          onPointerDown={(e) => {
+            e.stopPropagation()
+            // The second tap of a double tap on Comment lands here; it isn't a request to close
+            backdropPressRef.current = e.target === e.currentTarget && performance.now() - feedbackOpenedAtRef.current > DOUBLE_TAP_MS
+          }}
           onClick={(e) => {
             e.stopPropagation()
-            if (e.target === e.currentTarget) {
+            // Closes only when the backdrop got both the press and the release, so a press
+            // that began on the bar or in the box (a text selection dragged out of it) doesn't
+            // throw the note away
+            const pressedHere = backdropPressRef.current
+            backdropPressRef.current = false
+            if (pressedHere && e.target === e.currentTarget) {
               setSelectedEl(null)
               setAreaComplete(false)
               setAreaRect(null)
@@ -1358,17 +1409,23 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               border: '1px solid #333',
               borderRadius: 12,
               padding: 20,
-              width: 400,
-              maxWidth: '90vw',
+              // 400px of content on desktop, as always; on a phone it keeps a 16px gutter
+              boxSizing: 'border-box',
+              width: 442,
+              maxWidth: 'calc(100vw - 32px)',
+              // A tall area preview scrolls inside the box instead of running off screen
+              maxHeight: 'calc(100% - 32px)',
+              overflowY: 'auto',
               boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={{ color: '#ef4444', fontSize: 13, fontWeight: 600 }}>
-                {areaComplete ? 'Area Feedback' : 'Redline Feedback'}
+              <span style={tester ? { color: '#eee', fontSize: touchUi ? 18 : 15, fontWeight: 600 } : { color: '#ef4444', fontSize: 13, fontWeight: 600 }}>
+                {tester ? "What's wrong here?" : areaComplete ? 'Area Feedback' : 'Redline Feedback'}
               </span>
               <button
                 data-redline-ui
+                aria-label="Close"
                 onClick={() => {
                   setSelectedEl(null)
                   setAreaComplete(false)
@@ -1376,7 +1433,16 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                   setFeedback('')
                   setIncludeScreenshot(false)
                 }}
-                style={{ color: '#666', fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', lineHeight: 1 }}
+                style={{
+                  color: '#666',
+                  fontSize: 18,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  lineHeight: 1,
+                  // A thumb-sized target on touch, without pushing the title down
+                  ...(touchUi ? { width: 44, height: 44, margin: '-12px -12px -12px 0', fontSize: 26, color: '#888' } : null),
+                }}
               >
                 &times;
               </button>
@@ -1419,22 +1485,24 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               </span>
             </div>
 
-            {/* Element selector (element mode) */}
+            {/* Element selector (element mode, developers); testers see only its text */}
             {selectedEl && (
               <>
-                <div style={{ fontSize: 11, color: '#888', marginBottom: 8, fontFamily: 'monospace', padding: '6px 8px', backgroundColor: '#111', borderRadius: 6, wordBreak: 'break-all' }}>
-                  {generateSelector(selectedEl)}
-                </div>
+                {!tester && (
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 8, fontFamily: 'monospace', padding: '6px 8px', backgroundColor: '#111', borderRadius: 6, wordBreak: 'break-all' }}>
+                    {generateSelector(selectedEl)}
+                  </div>
+                )}
                 {selectedText && (
-                  <div style={{ fontSize: 11, color: '#aaa', marginBottom: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: tester && touchUi ? 14 : 11, color: '#aaa', marginBottom: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     &ldquo;{selectedText}&rdquo;
                   </div>
                 )}
               </>
             )}
 
-            {/* Area info (area mode) */}
-            {areaComplete && areaNorm && (
+            {/* Area info (area mode, developers) */}
+            {!tester && areaComplete && areaNorm && (
               <div style={{ fontSize: 11, color: '#888', marginBottom: 8, fontFamily: 'monospace', padding: '6px 8px', backgroundColor: '#111', borderRadius: 6 }}>
                 area: {areaNorm.w} &times; {areaNorm.h}px at ({areaNorm.x}, {areaNorm.y})
               </div>
@@ -1455,6 +1523,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                       el.height = src.height * scale
                       el.style.width = '100%'
                       el.style.height = 'auto'
+                      // A block, so no strip of line-box space shows under the picture
+                      el.style.display = 'block'
                       if (ctx) {
                         ctx.drawImage(src, 0, 0, el.width, el.height)
                       }
@@ -1472,58 +1542,65 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               onChange={(e) => { setFeedback(e.target.value); setSubmitError(null) }}
               placeholder="What's wrong? What should change?"
               maxLength={LIMITS.feedback}
-              onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleSubmit() }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit() }}
               style={{
+                boxSizing: 'border-box',
                 width: '100%',
                 minHeight: 80,
                 backgroundColor: '#111',
                 border: '1px solid #333',
                 borderRadius: 8,
                 color: '#eee',
-                fontSize: 13,
+                // iOS zooms the page into a field whose type is under 16px
+                fontSize: touchUi ? 16 : 13,
                 padding: '10px 12px',
                 resize: 'vertical',
                 outline: 'none',
                 fontFamily: 'inherit',
               }}
             />
-            <div style={{ fontSize: 10, color: '#666', marginTop: 4 }}>
+            <div style={{ fontSize: touchUi ? 12 : 10, color: touchUi ? '#888' : '#666', marginTop: touchUi ? 6 : 4 }}>
               Masked fields are blacked out in screenshots. Don&rsquo;t type patient or personal details here.
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: touchUi ? 0 : 6, marginTop: touchUi ? 4 : 10 }}>
               <label
                 data-redline-ui
-                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}
+                style={checkLabel}
               >
                 <input
                   type="checkbox"
                   data-redline-ui
                   checked={includeScreenshot && !screenshotDropped}
                   disabled={screenshotDropped}
-                  onChange={(e) => setIncludeScreenshot(e.target.checked)}
-                  style={{ accentColor: '#ef4444' }}
+                  onChange={(e) => {
+                    screenshotChosenRef.current = true
+                    setIncludeScreenshot(e.target.checked)
+                  }}
+                  style={checkBox}
                 />
                 Include Screenshot
               </label>
               {screenshotDropped && (
-                <div data-redline-ui style={{ fontSize: 10, color: '#f87171', marginTop: -2 }}>
+                <div data-redline-ui style={{ fontSize: touchUi ? 13 : 10, color: '#f87171', marginTop: -2 }}>
                   Screenshot dropped: masking failed.
                 </div>
               )}
-              <label
-                data-redline-ui
-                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}
-              >
-                <input
-                  type="checkbox"
+              {!tester && (
+                <label
                   data-redline-ui
-                  checked={requestUxReview}
-                  onChange={(e) => setRequestUxReview(e.target.checked)}
-                  style={{ accentColor: '#ef4444' }}
-                />
-                Request UX Review
-              </label>
+                  style={checkLabel}
+                >
+                  <input
+                    type="checkbox"
+                    data-redline-ui
+                    checked={requestUxReview}
+                    onChange={(e) => setRequestUxReview(e.target.checked)}
+                    style={checkBox}
+                  />
+                  Request UX Review
+                </label>
+              )}
             </div>
 
             {submitError && (
@@ -1532,7 +1609,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: touchUi ? 10 : 8, marginTop: 12 }}>
               <button
                 data-redline-ui
                 onClick={() => {
@@ -1542,7 +1619,16 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                   setFeedback('')
                   setIncludeScreenshot(false)
                 }}
-                style={{ padding: '6px 14px', fontSize: 12, borderRadius: 6, border: '1px solid #333', backgroundColor: 'transparent', color: '#aaa', cursor: 'pointer' }}
+                style={{
+                  padding: '6px 14px',
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: '1px solid #333',
+                  backgroundColor: 'transparent',
+                  color: '#aaa',
+                  cursor: 'pointer',
+                  ...(touchUi ? TOUCH_BOX_BUTTON : null),
+                }}
               >
                 Cancel
               </button>
@@ -1559,15 +1645,18 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                   color: submitting || !feedback.trim() ? '#666' : 'white',
                   cursor: submitting || !feedback.trim() ? 'default' : 'pointer',
                   fontWeight: 600,
+                  ...(touchUi ? TOUCH_BOX_BUTTON : null),
                 }}
               >
                 {submitting ? 'Submitting...' : 'Submit'}
               </button>
             </div>
 
-            <div style={{ fontSize: 10, color: '#555', marginTop: 8, textAlign: 'right' }}>
-              Cmd+Enter to submit &middot; Esc to cancel
-            </div>
+            {!tester && (
+              <div style={{ fontSize: 10, color: '#555', marginTop: 8, textAlign: 'right' }}>
+                Cmd+Enter to submit &middot; Esc to cancel
+              </div>
+            )}
           </div>
         </div>
       )}
