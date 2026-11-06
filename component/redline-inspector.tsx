@@ -23,6 +23,15 @@ interface AreaRect {
   endY: number
 }
 
+/** A corner of a drawn box, named by compass point. */
+type Corner = 'nw' | 'ne' | 'sw' | 'se'
+const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
+
+/** A box must be at least this wide and tall to count; smaller is an accidental touch. */
+const MIN_AREA_PX = 20
+/** How far a touch box keeps from the bar, so the handles on that side stay in reach. */
+const BAR_CLEARANCE_PX = 12
+
 /** A touch pick waiting for Comment: candidates innermost first, and the one outlined. */
 interface StagedPick {
   path: HTMLElement[]
@@ -108,6 +117,16 @@ const BAR_BUTTON: CSSProperties = {
   flexShrink: 0,
 }
 const BAR_BUTTON_DISABLED: CSSProperties = { ...BAR_BUTTON, color: '#555', cursor: 'default' }
+const BAR_COMMENT: CSSProperties = {
+  ...BAR_BUTTON,
+  flex: 1,
+  minHeight: 52,
+  border: 'none',
+  backgroundColor: '#ef4444',
+  color: 'white',
+  fontSize: 17,
+  fontWeight: 700,
+}
 const BAR_ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
 
 /** What to tell the person when a save is refused. Says "try again" only when that can work. */
@@ -154,6 +173,23 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Refs for drag state, read by the overlay's pointer handlers without re-rendering
   const draggingRef = useRef(false)
   const areaStartRef = useRef<{ x: number; y: number } | null>(null)
+  // The one finger or button drawing, so a second finger can't restart or end the drag
+  const areaPointerRef = useRef<number | null>(null)
+  // A corner handle being dragged: the pointer, the corner that stays put, which way the
+  // moving corner faces, and where the finger sits relative to that corner
+  const cornerDragRef = useRef<{ id: number; fixedX: number; fixedY: number; dirX: 1 | -1; dirY: 1 | -1; offX: number; offY: number } | null>(null)
+  // Bumped on every activation change, so a capture still running when Redline turns off
+  // doesn't reopen the feedback box later
+  const sessionRef = useRef(0)
+
+  // Touch area: a drawn box waiting for its corners to be adjusted and Comment. Mouse
+  // drags still capture on release.
+  const [areaDraft, setAreaDraft] = useState<AreaRect | null>(null)
+  const [capturingDraft, setCapturingDraft] = useState(false)
+  // The touch bar sits at the bottom, or at the top so a host's bottom navigation can be
+  // picked. Kept for the session only.
+  const [barAtTop, setBarAtTop] = useState(false)
+  const barRef = useRef<HTMLDivElement>(null)
 
   // Touch controls or desktop controls: starts from the device's main pointer, then
   // follows whatever pressed last, so a touchscreen laptop works with both
@@ -183,14 +219,19 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       setHoveredEl(null)
       setSelectedEl(null)
       setStaged(null)
+      setAreaDraft(null)
+      setCapturingDraft(false)
     }
   }
   // A pick the page has since removed has nothing left to comment on
   if (staged && !staged.path[staged.index].isConnected) setStaged(null)
   useEffect(() => {
+    sessionRef.current += 1
     if (!active) {
       draggingRef.current = false
       areaStartRef.current = null
+      areaPointerRef.current = null
+      cornerDragRef.current = null
     }
   }, [active])
 
@@ -235,7 +276,11 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       const touch = e.pointerType === 'touch'
       setTouchUi(touch)
       if (touch) setHoveredEl(null)
-      else setStaged(null)
+      else {
+        // Touch picks and boxes have no controls without the bar
+        setStaged(null)
+        setAreaDraft(null)
+      }
     }
 
     function handlePress(e: Event) {
@@ -404,6 +449,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Capture area screenshot
   const captureArea = useCallback(async (area: AreaRect) => {
     const { x, y, w, h } = normalizeArea(area)
+    const session = sessionRef.current
     setScreenshotDropped(false)
     try {
       const dpr = window.devicePixelRatio || 1
@@ -412,6 +458,8 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       const fullCanvas = await captureMasked(document.documentElement, masksKey.split('\n'), {
         scale: dpr,
       })
+      // Redline was turned off while the page was drawn: nothing to show any more
+      if (session !== sessionRef.current) return
 
       // Crop to selected area — clientX/Y are viewport-relative, so add scroll
       // offset to map to the correct position in the full-document canvas
@@ -433,6 +481,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       console.log('[redline] area screenshot captured:', w, 'x', h)
       setTimeout(() => inputRef.current?.focus(), 50)
     } catch (err) {
+      if (session !== sessionRef.current) return
       // Masking or capture failed: drop the screenshot rather than send it unmasked
       console.warn('[redline] area screenshot dropped:', err)
       screenshotCanvasRef.current = null
@@ -449,60 +498,150 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   // Area mode: drag on the interaction overlay to select a region. The overlay
   // captures the pointer, so the drag keeps tracking outside it and the release
   // always arrives. Drag state lives in refs; the handlers below read them.
+  // A mouse release captures straight away. A finger leaves a box with corner
+  // handles to adjust, captured when the tester presses Comment.
   // ---------------------------------------------------------------------------
   const resetAreaDrag = useCallback(() => {
     draggingRef.current = false
     areaStartRef.current = null
+    areaPointerRef.current = null
+    cornerDragRef.current = null
     setDragging(false)
     setAreaRect(null)
   }, [])
+
+  // Keeps a touch point where the tester can see it and reach its handle: on screen,
+  // and clear of the bar by enough that a handle's dot isn't hidden under it
+  const clampToFree = useCallback((x: number, y: number) => {
+    const bar = barRef.current?.getBoundingClientRect()
+    const top = bar && barAtTop ? bar.bottom + BAR_CLEARANCE_PX : 0
+    const bottom = bar && !barAtTop ? bar.top - BAR_CLEARANCE_PX : window.innerHeight
+    return {
+      x: Math.min(window.innerWidth, Math.max(0, x)),
+      y: Math.min(bottom, Math.max(top, y)),
+    }
+  }, [barAtTop])
 
   const handleAreaPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     // Keep the press from the page: no compatibility mousedown, no blur of open menus
     e.preventDefault()
     e.stopPropagation()
-    e.currentTarget.setPointerCapture(e.pointerId)
+    // One finger or the main button draws; a second finger can't restart the drag
+    if (!e.isPrimary || e.button !== 0 || capturingDraft) return
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // The pointer is already gone; the drag still works while it stays over the overlay
+    }
+    const { x, y } = e.pointerType === 'touch' ? clampToFree(e.clientX, e.clientY) : { x: e.clientX, y: e.clientY }
     draggingRef.current = true
-    areaStartRef.current = { x: e.clientX, y: e.clientY }
+    areaPointerRef.current = e.pointerId
+    areaStartRef.current = { x, y }
     setDragging(true)
-    setAreaRect({ startX: e.clientX, startY: e.clientY, endX: e.clientX, endY: e.clientY })
-  }, [])
+    setAreaRect({ startX: x, startY: y, endX: x, endY: y })
+  }, [capturingDraft, clampToFree])
 
   const handleAreaPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    setMousePos({ x: e.clientX, y: e.clientY })
-    if (!draggingRef.current || !areaStartRef.current) return
-    setAreaRect({
-      startX: areaStartRef.current.x,
-      startY: areaStartRef.current.y,
-      endX: e.clientX,
-      endY: e.clientY,
-    })
-  }, [])
+    if (e.pointerType !== 'touch') setMousePos({ x: e.clientX, y: e.clientY })
+    if (!draggingRef.current || !areaStartRef.current || e.pointerId !== areaPointerRef.current) return
+    const { x, y } = e.pointerType === 'touch' ? clampToFree(e.clientX, e.clientY) : { x: e.clientX, y: e.clientY }
+    setAreaRect({ startX: areaStartRef.current.x, startY: areaStartRef.current.y, endX: x, endY: y })
+  }, [clampToFree])
 
   const handleAreaPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || !areaStartRef.current) return
+    e.stopPropagation()
+    if (!draggingRef.current || !areaStartRef.current || e.pointerId !== areaPointerRef.current) return
+    const touch = e.pointerType === 'touch'
+    const end = touch ? clampToFree(e.clientX, e.clientY) : { x: e.clientX, y: e.clientY }
+    const finalRect: AreaRect = { startX: areaStartRef.current.x, startY: areaStartRef.current.y, endX: end.x, endY: end.y }
     draggingRef.current = false
-    setDragging(false)
-
-    const finalRect: AreaRect = {
-      startX: areaStartRef.current.x,
-      startY: areaStartRef.current.y,
-      endX: e.clientX,
-      endY: e.clientY,
-    }
     areaStartRef.current = null
-    const { w, h } = normalizeArea(finalRect)
+    areaPointerRef.current = null
+    setDragging(false)
+    setAreaRect(null)
 
-    if (w < 20 || h < 20) {
-      // Too small: an accidental click, reset
-      setAreaRect(null)
+    // Too small: an accidental touch or click. A box already drawn stays.
+    const { w, h } = normalizeArea(finalRect)
+    if (w < MIN_AREA_PX || h < MIN_AREA_PX) return
+
+    if (touch) {
+      // A finger: leave the box to adjust; Comment captures it
+      setAreaDraft(finalRect)
       return
     }
-
     // Released: capture straight away
     setAreaRect(finalRect)
     captureArea(finalRect)
-  }, [captureArea])
+  }, [captureArea, clampToFree])
+
+  const handleAreaPointerCancel = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerId === areaPointerRef.current) resetAreaDrag()
+  }, [resetAreaDrag])
+
+  // A corner handle moves its corner; the opposite corner stays put, and the box never
+  // shrinks below the smallest size or turns inside out
+  const handleCornerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>, corner: Corner) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.isPrimary || e.button !== 0 || !areaDraft || capturingDraft) return
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // The pointer is already gone; the drag still works while it stays over the handle
+    }
+    const { x, y, w, h } = normalizeArea(areaDraft)
+    const dirX = corner === 'ne' || corner === 'se' ? 1 : -1
+    const dirY = corner === 'sw' || corner === 'se' ? 1 : -1
+    const movingX = dirX === 1 ? x + w : x
+    const movingY = dirY === 1 ? y + h : y
+    cornerDragRef.current = {
+      id: e.pointerId,
+      fixedX: dirX === 1 ? x : x + w,
+      fixedY: dirY === 1 ? y : y + h,
+      dirX,
+      dirY,
+      offX: movingX - e.clientX,
+      offY: movingY - e.clientY,
+    }
+  }, [areaDraft, capturingDraft])
+
+  const handleCornerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = cornerDragRef.current
+    if (!drag || e.pointerId !== drag.id) return
+    const p = clampToFree(e.clientX + drag.offX, e.clientY + drag.offY)
+    const endX = drag.dirX === 1 ? Math.max(p.x, drag.fixedX + MIN_AREA_PX) : Math.min(p.x, drag.fixedX - MIN_AREA_PX)
+    const endY = drag.dirY === 1 ? Math.max(p.y, drag.fixedY + MIN_AREA_PX) : Math.min(p.y, drag.fixedY - MIN_AREA_PX)
+    setAreaDraft({ startX: drag.fixedX, startY: drag.fixedY, endX, endY })
+  }, [clampToFree])
+
+  const handleCornerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    e.stopPropagation()
+    if (cornerDragRef.current?.id === e.pointerId) cornerDragRef.current = null
+  }, [])
+
+  // Comment on a drawn box: capture it, then the feedback box takes over
+  const commentOnArea = useCallback(async () => {
+    if (!areaDraft || capturingDraft) return
+    const session = sessionRef.current
+    setCapturingDraft(true)
+    setAreaRect(areaDraft)
+    await captureArea(areaDraft)
+    // Turned off meanwhile: deactivation already cleared all of this
+    if (session !== sessionRef.current) return
+    setCapturingDraft(false)
+    setAreaDraft(null)
+  }, [areaDraft, capturingDraft, captureArea])
+
+  // While drawing by touch nothing on the page may scroll or zoom. The overlay, handles
+  // and bar refuse panning with touch-action; this catches what touch-action misses
+  // (older iOS Safari). Lifted the moment Area mode ends, however it ends.
+  const drawing = active && mode === 'area' && !showingFeedback
+  useEffect(() => {
+    if (!drawing) return
+    const refuse = (e: Event) => e.preventDefault()
+    document.addEventListener('touchmove', refuse, { capture: true, passive: false })
+    return () => document.removeEventListener('touchmove', refuse, true)
+  }, [drawing])
 
   // Silently capture screenshot via html2canvas when element is selected
   useEffect(() => {
@@ -555,10 +694,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
           setSelectedEl(null)
           setFeedback('')
         } else if (dragging) {
-          setDragging(false)
-          setAreaRect(null)
-          draggingRef.current = false
-          areaStartRef.current = null
+          resetAreaDrag()
+        } else if (areaDraft && !capturingDraft) {
+          setAreaDraft(null)
+          cornerDragRef.current = null
         } else if (staged) {
           setStaged(null)
         } else {
@@ -566,27 +705,25 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         }
       }
 
-      if (e.key === 's' && !showingFeedback) {
+      if (e.key === 's' && !showingFeedback && !capturingDraft) {
         e.preventDefault()
+        // Clear state from the other mode, drag refs included
+        resetAreaDrag()
+        setAreaDraft(null)
         setStaged(null)
-        setMode((prev: InspectorMode) => {
-          const next: InspectorMode = prev === 'element' ? 'area' : 'element'
-          // Clear state from the other mode
-          setHoveredEl(null)
-          setAreaRect(null)
-          setDragging(false)
-          setMousePos(null)
-          return next
-        })
+        setHoveredEl(null)
+        setMousePos(null)
+        setMode((prev: InspectorMode) => (prev === 'element' ? 'area' : 'element'))
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [active, selectedEl, areaComplete, dragging, staged, showingFeedback, onDeactivate])
+  }, [active, selectedEl, areaComplete, dragging, areaDraft, capturingDraft, staged, showingFeedback, onDeactivate, resetAreaDrag])
 
   // The bar's Element / Area switch
   const chooseMode = useCallback((next: InspectorMode) => {
     resetAreaDrag()
+    setAreaDraft(null)
     setStaged(null)
     setHoveredEl(null)
     setMousePos(null)
@@ -699,8 +836,13 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       ? sanitizePageUrl(window.location.pathname + window.location.search + window.location.hash)
       : ''
 
-  // Dimensions tooltip for area drag
-  const dimLabel = areaNorm && dragging ? `${areaNorm.w} × ${areaNorm.h}` : null
+  // Dimensions tooltip for a mouse drag (a finger would cover it)
+  const dimLabel = areaNorm && dragging && !touchUi ? `${areaNorm.w} × ${areaNorm.h}` : null
+
+  // The box on screen in Area mode: the one being dragged, else the touch box to adjust
+  const boxNorm = areaNorm ?? (areaDraft ? normalizeArea(areaDraft) : null)
+  const showDraft = !!areaDraft && !dragging
+  const showHandles = showDraft && !capturingDraft
 
   // The staged pick's box, read fresh each render (a step, a scroll, a resize)
   const stagedRect = mode === 'element' && !selectedEl ? stagedEl?.getBoundingClientRect() : undefined
@@ -710,9 +852,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
 
   return (
     <>
-      {/* Cursor overlay */}
+      {/* Cursor overlay. While picking, a long press can't open the browser's link
+          preview or start a text selection on the page. */}
       <style>{`
-        ${active && !showingFeedback ? '* { cursor: crosshair !important; } [data-redline-ui] button { cursor: pointer !important; }' : ''}
+        ${active && !showingFeedback ? '* { cursor: crosshair !important; -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; } [data-redline-ui] button { cursor: pointer !important; }' : ''}
       `}</style>
 
       {/* Mode indicator pill (mouse and pen) */}
@@ -788,9 +931,10 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
         </div>
       )}
 
-      {/* Touch bottom bar, in place of the pill, in the thumb zone */}
+      {/* Touch bar, in place of the pill, in the thumb zone (or docked at the top) */}
       {!showingFeedback && touchUi && (
         <div
+          ref={barRef}
           data-redline-ui
           data-testid="redline-touch-bar"
           {...KEEP_FROM_PAGE}
@@ -798,26 +942,35 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             position: 'fixed',
             left: 0,
             right: 0,
-            bottom: 0,
+            ...(barAtTop ? { top: 0 } : { bottom: 0 }),
             zIndex: 99999,
             boxSizing: 'border-box',
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
-            padding: '12px 12px calc(12px + env(safe-area-inset-bottom))',
+            padding: barAtTop
+              ? 'calc(12px + env(safe-area-inset-top)) 12px 12px'
+              : '12px 12px calc(12px + env(safe-area-inset-bottom))',
             backgroundColor: '#1a1a1a',
-            borderTop: '1px solid #333',
-            boxShadow: '0 -8px 24px rgba(0,0,0,0.35)',
+            ...(barAtTop
+              ? { borderBottom: '1px solid #333', boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }
+              : { borderTop: '1px solid #333', boxShadow: '0 -8px 24px rgba(0,0,0,0.35)' }),
             fontFamily: 'system-ui, -apple-system, sans-serif',
-            touchAction: 'manipulation',
+            // While drawing, a swipe on the bar mustn't scroll the page under the box
+            touchAction: mode === 'area' ? 'none' : 'manipulation',
             userSelect: 'none',
             WebkitUserSelect: 'none',
             WebkitTapHighlightColor: 'transparent',
           }}
         >
+          {/* Cancel sits on the left, never where Done sits, so a double tap on it
+              can't land on Done and turn Redline off */}
           {staged ? (
             <>
               <div style={BAR_ROW}>
+                <button type="button" data-redline-ui onClick={() => setStaged(null)} style={BAR_BUTTON}>
+                  Cancel
+                </button>
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span aria-hidden style={{ width: 12, height: 12, flexShrink: 0, boxSizing: 'border-box', border: '2px solid #ef4444', borderRadius: 3 }} />
                   <span
@@ -828,9 +981,6 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                     {stagedName}
                   </span>
                 </div>
-                <button type="button" data-redline-ui onClick={() => setStaged(null)} style={BAR_BUTTON}>
-                  Cancel
-                </button>
               </div>
               <div style={BAR_ROW}>
                 <button
@@ -851,13 +1001,36 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 >
                   Bigger
                 </button>
+                <button type="button" data-redline-ui onClick={commentOnPick} style={BAR_COMMENT}>
+                  Comment
+                </button>
+              </div>
+            </>
+          ) : areaDraft && mode === 'area' ? (
+            <>
+              <div style={BAR_ROW}>
                 <button
                   type="button"
                   data-redline-ui
-                  onClick={commentOnPick}
-                  style={{ ...BAR_BUTTON, flex: 1, minHeight: 52, border: 'none', backgroundColor: '#ef4444', color: 'white', fontSize: 17, fontWeight: 700 }}
+                  disabled={capturingDraft}
+                  onClick={() => setAreaDraft(null)}
+                  style={capturingDraft ? BAR_BUTTON_DISABLED : BAR_BUTTON}
                 >
-                  Comment
+                  Cancel
+                </button>
+                <span style={{ flex: 1, minWidth: 0, color: '#aaa', fontSize: 15 }}>
+                  Adjust the corners, then Comment.
+                </span>
+              </div>
+              <div style={BAR_ROW}>
+                <button
+                  type="button"
+                  data-redline-ui
+                  disabled={capturingDraft}
+                  onClick={commentOnArea}
+                  style={{ ...BAR_COMMENT, ...(capturingDraft ? { opacity: 0.6, cursor: 'default' } : null) }}
+                >
+                  {capturingDraft ? 'Capturing\u2026' : 'Comment'}
                 </button>
               </div>
             </>
@@ -881,7 +1054,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                 <div
                   role="group"
                   aria-label="What to pick"
-                  style={{ flex: 1, display: 'flex', gap: 3, padding: 3, backgroundColor: '#111', border: '1px solid #333', borderRadius: 12 }}
+                  style={{ flex: 1, minWidth: 0, display: 'flex', gap: 3, padding: 3, backgroundColor: '#111', border: '1px solid #333', borderRadius: 12 }}
                 >
                   {(['element', 'area'] as const).map((m) => (
                     <button
@@ -893,6 +1066,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                       style={{
                         ...BAR_BUTTON,
                         flex: 1,
+                        padding: '0 8px',
                         border: 'none',
                         borderRadius: 9,
                         backgroundColor: mode === m ? '#333' : 'transparent',
@@ -903,6 +1077,32 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
                     </button>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  data-redline-ui
+                  aria-label={barAtTop ? 'Move bar to bottom' : 'Move bar to top'}
+                  title={barAtTop ? 'Move bar to bottom' : 'Move bar to top'}
+                  onClick={() => setBarAtTop((top) => !top)}
+                  style={{ ...BAR_BUTTON, width: 44, minHeight: 52, padding: 0, border: 'none', color: '#888', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  {/* An arrow to the edge the bar will move to */}
+                  <svg
+                    aria-hidden
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ transform: barAtTop ? 'rotate(180deg)' : undefined }}
+                  >
+                    <path d="M5 3h14" />
+                    <path d="M12 21V8" />
+                    <path d="m6 13 6-6 6 6" />
+                  </svg>
+                </button>
                 <button
                   type="button"
                   data-redline-ui
@@ -1004,19 +1204,22 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
       {mode === 'area' && !areaComplete && (
         <>
           {/* Interaction overlay — captures all pointer events so page elements
-              (dropdowns, menus, etc.) don't receive pointerdown/blur and stay open */}
+              (dropdowns, menus, etc.) don't receive pointerdown/blur and stay open.
+              touch-action: none keeps a finger drawing instead of scrolling. */}
           <div
             data-redline-ui
             data-redline-area-overlay
+            {...KEEP_FROM_PAGE}
             onPointerDown={handleAreaPointerDown}
             onPointerMove={handleAreaPointerMove}
             onPointerUp={handleAreaPointerUp}
-            onPointerCancel={resetAreaDrag}
+            onPointerCancel={handleAreaPointerCancel}
             style={{
               position: 'fixed',
               inset: 0,
               zIndex: 99996,
               cursor: 'crosshair',
+              touchAction: 'none',
             }}
           />
 
@@ -1034,16 +1237,18 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
             />
           )}
 
-          {/* Selection rectangle */}
-          {areaNorm && areaNorm.w > 0 && areaNorm.h > 0 && (
+          {/* Selection rectangle: the drag in progress, or the touch box to adjust */}
+          {boxNorm && boxNorm.w > 0 && boxNorm.h > 0 && (
             <div
               data-redline-ui
+              data-testid={showDraft ? 'redline-area-draft' : undefined}
               style={{
                 position: 'fixed',
-                top: areaNorm.y,
-                left: areaNorm.x,
-                width: areaNorm.w,
-                height: areaNorm.h,
+                top: boxNorm.y,
+                left: boxNorm.x,
+                width: boxNorm.w,
+                height: boxNorm.h,
+                boxSizing: 'border-box',
                 border: '2px solid #ef4444',
                 backgroundColor: 'rgba(239, 68, 68, 0.1)',
                 zIndex: 99998,
@@ -1052,6 +1257,46 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
               }}
             />
           )}
+
+          {/* Corner handles: a 44px target around each corner, a dot to see */}
+          {showHandles && boxNorm && CORNERS.map((corner) => (
+            <div
+              key={corner}
+              data-redline-ui
+              data-redline-handle={corner}
+              {...KEEP_FROM_PAGE}
+              onPointerDown={(e) => handleCornerDown(e, corner)}
+              onPointerMove={handleCornerMove}
+              onPointerUp={handleCornerUp}
+              onPointerCancel={handleCornerUp}
+              style={{
+                position: 'fixed',
+                left: (corner === 'nw' || corner === 'sw' ? boxNorm.x : boxNorm.x + boxNorm.w) - 22,
+                top: (corner === 'nw' || corner === 'ne' ? boxNorm.y : boxNorm.y + boxNorm.h) - 22,
+                width: 44,
+                height: 44,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 99998,
+                touchAction: 'none',
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 18,
+                  height: 18,
+                  boxSizing: 'border-box',
+                  borderRadius: '50%',
+                  backgroundColor: 'white',
+                  border: '3px solid #ef4444',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+          ))}
 
           {/* Dimensions tooltip */}
           {dimLabel && mousePos && (
