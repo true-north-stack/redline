@@ -229,9 +229,13 @@ export async function captureMasked(
 interface Shift {
   /** The live element; its copy carries the SCROLL mark */
   el: Element
-  /** A scroller in normal flow: open its copy with a spacer pulling the content this far up */
-  spacer?: number
-  /** Move the copy by this much, in page space */
+  /** Open the copy with a spacer pulling its content this far up (block, flex column) */
+  spacerTop?: number
+  /** Open the copy with a spacer pulling its content this far left (flex row) */
+  spacerLeft?: number
+  /** Replace the copy's margins with these, moving it without a transform */
+  margins?: Partial<Record<'top' | 'right' | 'bottom' | 'left', number>>
+  /** Move the copy by this much with translate, where margins can't do it */
   x?: number
   y?: number
 }
@@ -243,11 +247,16 @@ interface Shift {
  * restoreScrollPosition feature stays off: it also shifts the page's scroller, which the
  * area crop already offsets by.)
  *
- * A block or flex-column scroller gets a spacer with a negative margin at the top of its
- * copy, so text, sticky headers and everything in flow lands where the browser shows it.
- * Other scrollers (grid, flex rows) and horizontal scroll move each child instead. Fixed
- * children, and absolute ones placed against something outside the scroller, don't
- * scroll in the browser, so they aren't moved.
+ * Content is moved by layout wherever it can be, never by transform, because a transform
+ * would make the moved element the reference for fixed and sticky parts inside it. Along
+ * the direction a container stacks its content (down for block and flex column, across
+ * for flex row), a spacer with a negative margin opens the copy and pulls everything after
+ * it, text included. Across the other direction, each block-level child is moved by its
+ * margins. Sticky parts then settle where the browser shows them, since the copy sits at
+ * scroll 0. Grid and reversed flex scrollers, inline-block children and absolute children
+ * placed against the scroller are moved with translate instead. Fixed and sticky children,
+ * and absolute ones placed against something outside the scroller, don't scroll, so they
+ * aren't moved.
  */
 function scrollShifts(root: Element): Shift[] {
   const page = root.ownerDocument.scrollingElement
@@ -263,42 +272,73 @@ function scrollShifts(root: Element): Shift[] {
     if ((!top && !left) || scroller === page || scroller.closest(REDLINE_UI)) continue
     const cs = getComputedStyle(scroller)
     const flex = /flex$/.test(cs.display)
-    const flow = /^(block|flow-root|list-item)$/.test(cs.display) || (flex && cs.flexDirection === 'column')
-    // In a flex column the gap after the spacer would push the content back down
-    if (top && flow) entry(scroller).spacer = top + (flex ? parseFloat(cs.rowGap) || 0 : 0)
+    const column = flex && cs.flexDirection === 'column'
+    const row = flex && cs.flexDirection === 'row'
+    const block = /^(block|flow-root|list-item)$/.test(cs.display)
+    // A flex gap after the spacer would push the content back
+    if (top && (block || column)) entry(scroller).spacerTop = top + (column ? parseFloat(cs.rowGap) || 0 : 0)
+    if (left && row) entry(scroller).spacerLeft = left + (parseFloat(cs.columnGap) || 0)
+    // What the spacer doesn't carry, each child has to move itself
+    const across = { x: row ? 0 : left, y: block || column ? 0 : top }
     for (const child of Array.from(scroller.children)) {
-      const position = getComputedStyle(child).position
+      const style = getComputedStyle(child)
+      const position = style.position
       if (position === 'fixed' || position === 'sticky') continue
-      let y = flow ? 0 : top
       if (position === 'absolute') {
         if (!(child instanceof HTMLElement) || child.offsetParent !== scroller) continue
-        y = top // out of flow, so the spacer doesn't carry it
+        const s = entry(child)
+        s.x = (s.x ?? 0) - left
+        s.y = (s.y ?? 0) - top
+        continue
       }
-      if (!left && !y) continue
+      if (!across.x && !across.y) continue
       const s = entry(child)
-      s.x = (s.x ?? 0) - left
-      s.y = (s.y ?? 0) - y
+      if ((block || column || row) && !style.display.startsWith('inline')) {
+        const m = (s.margins ??= {})
+        if (across.x) {
+          m.left = parseFloat(style.marginLeft) - across.x
+          m.right = parseFloat(style.marginRight) + across.x // keeps an auto width the same
+        }
+        if (across.y) {
+          m.top = parseFloat(style.marginTop) - across.y
+          m.bottom = parseFloat(style.marginBottom) + across.y
+        }
+      } else {
+        s.x = (s.x ?? 0) - across.x
+        s.y = (s.y ?? 0) - across.y
+      }
     }
   }
   return Array.from(shifts.values())
 }
 
 function applyShift(el: HTMLElement, s: Shift) {
-  if (s.spacer) {
-    const spacer = el.ownerDocument.createElement('div')
-    spacer.style.cssText = `display:block;flex:none;height:0;padding:0;border:0;margin:-${s.spacer}px 0 0 0`
+  const doc = el.ownerDocument
+  // A 1px spacer, so its margin can't collapse through it into a negative child margin
+  if (s.spacerTop) {
+    const spacer = doc.createElement('div')
+    spacer.style.cssText = `display:block;flex:none;height:1px;padding:0;border:0;margin:-${s.spacerTop + 1}px 0 0 0`
     el.prepend(spacer)
   }
-  if (!s.x && !s.y) return
-  // The translate property applies outside rotate, scale and transform, so the move stays
-  // in page space. If the element already uses it, go ahead of its transform instead.
-  const style = el.style
-  if (!style.translate || style.translate === 'none') {
-    style.setProperty('translate', `${s.x ?? 0}px ${s.y ?? 0}px`, 'important')
-  } else {
-    const own = style.transform && style.transform !== 'none' ? style.transform : ''
-    style.setProperty('transform', `translate(${s.x ?? 0}px, ${s.y ?? 0}px) ${own}`.trim(), 'important')
+  if (s.spacerLeft) {
+    const spacer = doc.createElement('div')
+    spacer.style.cssText = `display:block;flex:none;width:1px;padding:0;border:0;margin:0 0 0 -${s.spacerLeft + 1}px`
+    el.prepend(spacer)
   }
+  const style = el.style
+  for (const [side, px] of Object.entries(s.margins ?? {})) style.setProperty(`margin-${side}`, `${px}px`, 'important')
+  if (!s.x && !s.y) return
+  // translate applies outside rotate, scale and transform, so the move stays in page space.
+  // An existing translate is kept and added to; one written with calc() can't be split
+  // into its parts, so the move goes ahead of the transform instead.
+  const own = !style.translate || style.translate === 'none' ? '' : style.translate
+  if (own.includes('(')) {
+    const transform = style.transform && style.transform !== 'none' ? style.transform : ''
+    style.setProperty('transform', `translate(${s.x ?? 0}px, ${s.y ?? 0}px) ${transform}`.trim(), 'important')
+    return
+  }
+  const [x = '0px', y = '0px', z = ''] = own ? own.split(/\s+/) : []
+  style.setProperty('translate', `calc(${x} + ${s.x ?? 0}px) calc(${y} + ${s.y ?? 0}px) ${z}`.trim(), 'important')
 }
 
 function redactClone(el: HTMLElement, t: Target) {

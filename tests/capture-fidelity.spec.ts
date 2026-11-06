@@ -84,6 +84,16 @@ const shellHtml = (props: object) => `<!doctype html><html><head><meta charset="
   .fab { position: fixed; left: 700px; top: 20px; width: 60px; height: 60px; background: #ff8800; }
   #grid { display: grid; position: absolute; left: 0; top: 450px; width: 300px; height: 200px; overflow-y: auto; }
   #grid .red, #grid .blue { height: 300px; }
+  /* A wide table scrolled sideways, with a sticky first column */
+  #wide { position: absolute; left: 320px; top: 450px; width: 300px; height: 150px; overflow-x: auto; }
+  #wide table { border-collapse: collapse; }
+  #wide td { height: 100px; padding: 0; }
+  #wide .pin { position: sticky; left: 0; min-width: 60px; background: #00ff00; }
+  #wide .red, #wide .blue { min-width: 400px; height: 100px; }
+  /* A first child pulled up by a negative margin */
+  #neg { position: absolute; left: 650px; top: 450px; width: 150px; height: 150px; overflow-y: auto; }
+  #neg .red { margin-top: -50px; height: 250px; }
+  #neg .blue { height: 400px; }
 </style></head><body>
   <div id="shell"><main id="main">
     <div class="sticky"></div>
@@ -92,6 +102,8 @@ const shellHtml = (props: object) => `<!doctype html><html><head><meta charset="
     <div class="badge"></div>
   </main></div>
   <div id="grid"><div class="red"></div><div class="blue"></div></div>
+  <div id="wide"><table><tr><td class="pin"></td><td class="red"></td><td class="blue"></td></tr></table></div>
+  <div id="neg"><div class="red"></div><div class="blue"></div></div>
   <div id="redline-root"></div>
   <script>window.__REDLINE_PROPS__ = ${JSON.stringify(props)}</script>
   <script>${'${bundle}'}</script>
@@ -327,4 +339,26 @@ test('a name slotted into a masked part of a component is masked, picked from th
   const slotted = await send(page, posts)
   expect(String(slotted.get('element_text'))).toBe('[redacted]')
   expect(await magenta(page, await shotOf(slotted))).toBe(0)
+})
+
+test('a table scrolled sideways keeps its sticky first column', async ({ page }) => {
+  const posts = await open(page, { initialMode: 'area' }, shellHtml)
+  await page.locator('#wide').evaluate((el) => { el.scrollLeft = 500 })
+  await drawArea(page, 330, 460, 610, 540)
+  const shot = await colors(page, await shotOf(await send(page, posts)))
+  // 50px of pinned green, then blue; the red cell is scrolled away
+  expect(shot.green).toBeGreaterThan(0.12)
+  expect(shot.red).toBe(0)
+  expect(shot.blue).toBeGreaterThan(0.7)
+})
+
+test('a first child with a negative top margin is pictured where it is', async ({ page }) => {
+  const posts = await open(page, { initialMode: 'area' }, shellHtml)
+  await page.locator('#neg').evaluate((el) => { el.scrollTop = 150 })
+  await drawArea(page, 651, 451, 780, 595)
+  const shot = await colors(page, await shotOf(await send(page, posts)))
+  // The browser shows 50px of red over 100px of blue
+  expect(shot.red).toBeGreaterThan(0.25)
+  expect(shot.red).toBeLessThan(0.42)
+  expect(shot.blue).toBeGreaterThan(0.55)
 })
