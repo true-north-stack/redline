@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.2 (unreleased)
+## 1.3.2 (2026-11-06)
 
 - **Items side by side read on one line.** 1.3.1 put every item of a flex row on its own line, so "5 invoices · $932.50 overdue" came out as three lines with the dot alone in the middle. Items of a flex row are now joined with a space, grid cells on the same row on screen share a line, and a wrapped row or a new grid row starts a new one. This holds whether the tester picks the row itself or something around it. Blocks inside an item still stack, and nothing runs together.
 - **Table cells share a line.** Each cell was its own line, though the 1.3.1 notes said cells were separated by a space; they now are, and each table row is a line.
