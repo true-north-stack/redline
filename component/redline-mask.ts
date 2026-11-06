@@ -45,14 +45,14 @@ function isContextual(selector: string): boolean {
   return /[\s>+~]|:host|::slotted|::part/.test(bare.trim())
 }
 
+// Everything Redline renders carries this attribute
+const REDLINE_UI = '[data-redline-ui]'
+
 /**
  * Masked elements inside (or containing) root, across open shadow roots and
  * same-origin iframes (both are rendered by the screenshot library). Throws when
  * content behind a boundary can't be checked reliably, so the capture is dropped.
  */
-// Everything Redline renders carries this attribute
-const REDLINE_UI = '[data-redline-ui]'
-
 function findTargets(root: Element, selectors: string[]): Match[] {
   const selector = selectors.join(',')
   if (insideMasked(root, selector)) return [{ mark: root, box: root }]

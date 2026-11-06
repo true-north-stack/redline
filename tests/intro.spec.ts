@@ -240,3 +240,12 @@ test('desktop: Next stays under the pointer from page to page', async ({ page })
     }
   }
 })
+
+test("the picture of the feedback box names its button as the real box does", async ({ page }) => {
+  for (const touch of [false, true]) {
+    await load(page, { touch })
+    await next(page).click()
+    await expect(title(page)).toHaveText("Say what's wrong")
+    await expect(dialog(page).locator('.rl-intro-send')).toHaveText('Submit')
+  }
+})

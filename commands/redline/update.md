@@ -131,6 +131,6 @@ If the check listed any changed or missing files, add:
 Redline's project files changed upstream: <the list from the check>.
 To update them, re-run the install prompt from AGENT-INSTALLATION.md in this project.
 Don't copy redline-inspector.tsx on its own: the new inspector imports redline-config.ts,
-redline-mask.ts, redline-intro.tsx, redline-touch.ts and redline-shortcuts.ts, so copying it alone breaks the build. The install prompt copies the
-full set and keeps local mode working.
+redline-mask.ts, redline-intro.tsx and redline-touch.ts, so copying it alone breaks the build. The install prompt copies the
+full set, including the redline-shortcuts.ts hook, and keeps local mode working.
 ```

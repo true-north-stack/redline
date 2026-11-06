@@ -64,3 +64,21 @@ test('VERSION matches the newest released CHANGELOG entry, and 1.2.0 keeps its u
   expect(log).toContain('Upgrading from 1.1.x')
   expect(log).toContain('15.1')
 })
+
+test('the docs name exactly the files the inspector imports', async () => {
+  const inspector = await read('component/redline-inspector.tsx')
+  const components = await readdir(join(repo, 'component'))
+  const imports = [...inspector.matchAll(/from '\.\/(redline-[\w-]+)'/g)]
+    .map((m) => components.find((f) => f.replace(/\.tsx?$/, '') === m[1]))
+    .sort()
+  expect(imports.length).toBeGreaterThan(2)
+  const named = (text: string) => [...text.matchAll(/redline-[\w-]+\.tsx?/g)].map((m) => m[0]).sort()
+
+  const update = /the new inspector imports ([\s\S]*?), so copying it alone/.exec(await read('commands/redline/update.md'))
+  expect(update, 'update.md names what the inspector imports').not.toBeNull()
+  expect(named(update![1])).toEqual(imports)
+
+  const install = /It adds (.*?), which the new inspector imports/.exec(await read('AGENT-INSTALLATION.md'))
+  expect(install, 'AGENT-INSTALLATION names what the inspector imports').not.toBeNull()
+  for (const f of named(install![1])) expect(imports, `the inspector imports ${f}`).toContain(f)
+})

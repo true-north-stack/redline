@@ -4,7 +4,7 @@ Copy the prompt below and paste it into [Claude Code](https://docs.anthropic.com
 
 Requirements: a Next.js App Router project on Next.js 15.1 or later. The feedback route imports `after` from `next/server`, which 15.1 introduced.
 
-Upgrading from 1.2.x: paste the same prompt. It adds `redline-intro.tsx`, `redline-touch.ts` and `redline-shortcuts.ts`, which the new inspector imports, and passes the new `audience` prop.
+Upgrading from 1.2.x: paste the same prompt. It adds `redline-intro.tsx` and `redline-touch.ts`, which the new inspector imports, and `redline-shortcuts.ts`, the keyboard shortcut hook, and passes the new `audience` prop.
 
 Upgrading from 1.1.x: paste the same prompt. It replaces the commands and component files and adds the new ones (`redline-config.ts`, `redline-mask.ts` and the storage and handler files), which the new inspector imports. Local mode keeps working as before.
 

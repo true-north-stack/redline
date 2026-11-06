@@ -140,7 +140,7 @@ function FeedbackPicture({ ticked }: { ticked: boolean }) {
       <div className="rl-intro-row">
         <span className={ticked ? 'rl-intro-box rl-intro-box-on' : 'rl-intro-box'} />
         <span>Include Screenshot</span>
-        <span className="rl-intro-send">Send</span>
+        <span className="rl-intro-send">Submit</span>
       </div>
     </div>
   )
