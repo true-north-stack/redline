@@ -7,6 +7,7 @@
 // aren't rendered at all, so there's nothing in them to leak.
 
 const MARK = 'data-redline-mask'
+const SCROLL = 'data-redline-scroll'
 const REDACTED = '[redacted]'
 
 interface Target {
@@ -163,9 +164,11 @@ export async function captureMasked(
     }
   })
   const redacted = new Set<number>()
+  const scrolled = scrolledInside(root)
 
   // Mark the live elements so their clones can be recognized; the clone keeps attributes
   targets.forEach((t, i) => t.el.setAttribute(MARK, String(i)))
+  scrolled.forEach((s, i) => s.el.setAttribute(SCROLL, String(i)))
   try {
     const canvas = await domToCanvas(root, {
       backgroundColor: backgroundBehind(root),
@@ -173,13 +176,28 @@ export async function captureMasked(
       filter: (node) => node.nodeType !== Node.ELEMENT_NODE || !(node as Element).matches(REDLINE_UI),
       // modern-screenshot drops the root's own margins, and the copy it draws then
       // falls back to the browser's defaults for that tag (h1, p, ul…), pushing the
-      // content down and clipping it. Pin the root copy's margins to zero.
+      // content down and clipping it. Pin the root copy's margins to zero. A positioned
+      // root (a fixed drawer, an absolute card) keeps its left/top offsets in the copy and
+      // draws itself off the canvas, so it is pinned to the canvas origin too. It stays
+      // positioned, so its absolute children keep the same containing block.
       onCloneNode: (cloned) => {
-        if (cloned.nodeType === Node.ELEMENT_NODE) (cloned as HTMLElement).style.setProperty('margin', '0', 'important')
+        if (cloned.nodeType !== Node.ELEMENT_NODE) return
+        const s = (cloned as HTMLElement).style
+        s.setProperty('margin', '0', 'important')
+        if (root !== root.ownerDocument.documentElement && getComputedStyle(root).position !== 'static') {
+          s.setProperty('position', 'relative', 'important')
+          s.setProperty('inset', 'auto', 'important')
+        }
       },
       onCloneEachNode: (cloned) => {
         if (cloned.nodeType !== Node.ELEMENT_NODE) return
         const el = cloned as HTMLElement
+        const at = el.getAttribute(SCROLL)
+        if (at !== null) {
+          el.removeAttribute(SCROLL)
+          const s = scrolled[Number(at)]
+          if (s) shiftChildren(el, s.left, s.top)
+        }
         const idx = el.getAttribute(MARK)
         if (idx === null) return
         const t = targets[Number(idx)]
@@ -194,6 +212,39 @@ export async function captureMasked(
     return canvas
   } finally {
     targets.forEach((t) => t.el.removeAttribute(MARK))
+    scrolled.forEach((s) => s.el.removeAttribute(SCROLL))
+  }
+}
+
+interface Scrolled {
+  el: Element
+  left: number
+  top: number
+}
+
+/**
+ * Elements in root (root included) scrolled away from their top or left edge. The copy
+ * the screenshot library draws always starts at scroll 0, so a drawer scrolled to its
+ * lower half would be pictured from its top. The page's own scroll is left out: the
+ * area crop already offsets the whole-page picture by it.
+ */
+function scrolledInside(root: Element): Scrolled[] {
+  const page = root.ownerDocument.scrollingElement
+  const out: Scrolled[] = []
+  for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
+    if (el === page || el.closest(REDLINE_UI)) continue
+    if (el.scrollTop || el.scrollLeft) out.push({ el, left: el.scrollLeft, top: el.scrollTop })
+  }
+  return out
+}
+
+/** Move a scrolled container's copied children by its scroll offset, as the browser does. */
+function shiftChildren(el: HTMLElement, left: number, top: number) {
+  for (const child of Array.from(el.children) as HTMLElement[]) {
+    if (!child.style) continue
+    // Translate in page space ahead of the child's own transform (rotate, scale…)
+    const own = child.style.transform && child.style.transform !== 'none' ? child.style.transform : ''
+    child.style.setProperty('transform', `translate(${-left}px, ${-top}px) ${own}`.trim(), 'important')
   }
 }
 
@@ -222,18 +273,59 @@ function redactClone(el: HTMLElement, t: Target) {
   set('opacity', '1')
 }
 
-/** textContent of el with masked subtrees replaced by [redacted]. */
-export function redactedText(el: HTMLElement, selectors: string[], maxLength: number): string | null {
-  const targets = findTargets(el, selectors).map((t) => t.mark)
-  if (targets.includes(el)) return REDACTED
+// Boxes that start a new line in what the reader sees. Flex and grid items are reported
+// blockified by getComputedStyle, so a row of spans in a flex container counts too.
+const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)\b/
+// Side-by-side boxes that still need a gap between them
+const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)\b/
 
-  targets.forEach((t) => t.setAttribute(MARK, ''))
-  let clone: HTMLElement
-  try {
-    clone = el.cloneNode(true) as HTMLElement
-  } finally {
-    targets.forEach((t) => t.removeAttribute(MARK))
+/**
+ * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
+ * Separate boxes stay separate: a label over a value is two lines, not one run-on word,
+ * so "$5,786.50" over "5 invoices" never reads as "$5,786.505". Hidden elements are
+ * left out, whitespace is collapsed, and the result is cut to maxLength last.
+ */
+export function redactedText(el: HTMLElement, selectors: string[], maxLength: number): string | null {
+  const targets = new Set(findTargets(el, selectors).map((t) => t.mark))
+  if (targets.has(el)) return REDACTED
+
+  let out = ''
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += (node as Text).data.replace(/\s+/g, ' ')
+      return
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+    const child = node as Element
+    if (targets.has(child)) {
+      out += ` ${REDACTED} `
+      return
+    }
+    if (child.localName === 'br') {
+      out += '\n'
+      return
+    }
+    const display = child === el ? 'block' : getComputedStyle(child).display
+    if (display === 'none' || child.localName === 'script' || child.localName === 'style') return
+    const breaks = BLOCK_DISPLAY.test(display)
+    const spaced = SPACED_DISPLAY.test(display)
+    out += breaks ? '\n' : spaced ? ' ' : ''
+    child.childNodes.forEach(walk)
+    out += breaks ? '\n' : spaced ? ' ' : ''
   }
-  clone.querySelectorAll(`[${MARK}]`).forEach((n) => n.replaceWith(REDACTED))
-  return clone.textContent?.slice(0, maxLength) || null
+  walk(el)
+
+  const text = out
+    .split('\n')
+    .map((line) => line.replace(/ +/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
+  return cut(text, maxLength) || null
+}
+
+/** At most max UTF-16 units, never splitting an emoji or other surrogate pair. */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text
+  const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max
+  return text.slice(0, end)
 }

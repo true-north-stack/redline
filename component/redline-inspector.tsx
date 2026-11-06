@@ -11,8 +11,10 @@ interface RedlineInspectorProps {
   onDeactivate: () => void
   apiUrl?: string
   initialMode?: InspectorMode
-  /** Extra selectors to mask in screenshots and captured text, on top of [data-phi] */
+  /** Extra selectors to mask in screenshots and captured text, on top of [data-phi] and the defaults */
   phiSelectors?: string[]
+  /** Mask email and phone fields, text areas, editable text, and mailto/tel links without tagging. Defaults to true. */
+  maskDefaults?: boolean
   /**
    * Who leaves the feedback. Testers get plain wording (no selector, no UX review option, no
    * keyboard hints) and an element screenshot ticked by default. Defaults to 'developer'.
@@ -179,14 +181,14 @@ async function submitErrorMessage(res: Response, sentScreenshot: boolean): Promi
     } catch {
       // Hosts and platforms can answer 413 without a JSON body
     }
-    if (field === 'feedback') return 'Your note is too long. Shorten it and try again.'
+    if (field === 'feedback') return 'That note is too long. Shorten it and try again.'
     if (sentScreenshot) return 'Too large to send. Untick Include Screenshot and try again.'
-    return 'Too large to send. Shorten your note and try again.'
+    return 'Too large to send. Shorten the note and try again.'
   }
-  return `Couldn't save your feedback (${res.status}). Try again.`
+  return `Couldn't save the feedback (${res.status}). Try again.`
 }
 
-export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors, audience = 'developer', shortcuts = true }: RedlineInspectorProps) {
+export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines', initialMode = 'element', phiSelectors, maskDefaults = true, audience = 'developer', shortcuts = true }: RedlineInspectorProps) {
   const tester = audience === 'tester'
   const [hoveredEl, setHoveredEl] = useState<HTMLElement | null>(null)
   const [selectedEl, setSelectedEl] = useState<HTMLElement | null>(null)
@@ -320,7 +322,7 @@ export function RedlineInspector({ active, onDeactivate, apiUrl = '/api/redlines
   }, [initialMode])
 
   // Selectors to mask; joined so effects only re-run when the list actually changes
-  const masksKey = maskSelectors(phiSelectors).join('\n')
+  const masksKey = maskSelectors(phiSelectors, maskDefaults).join('\n')
 
   // Element text as it will be saved (masked), shown in the modal
   const selectedText = useMemo(() => {
