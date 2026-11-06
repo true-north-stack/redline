@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Crosshair, ExternalLink } from 'lucide-react'
 
@@ -26,29 +26,32 @@ export function RedlineSidebar({ isActive, onToggle, apiUrl = '/api/redlines' }:
   const [showList, setShowList] = useState(false)
   const [redlines, setRedlines] = useState<RedlineRow[]>([])
   const [count, setCount] = useState(0)
+  // Bumped to re-fetch, e.g. when the list is opened
+  const [refresh, setRefresh] = useState(0)
 
-  const fetchRedlines = useCallback(async () => {
-    try {
-      const res = await fetch(apiUrl)
-      if (!res.ok) return
-      const json = await res.json()
-      setRedlines(json.data ?? [])
-      setCount(json.count ?? 0)
-    } catch {
-      // API not available — silently degrade
-    }
-  }, [apiUrl])
-
-  // Fetch on mount and after submissions
+  // Fetch on mount and after submissions. State is set in the promise callback, not in
+  // the effect body, so an update never cascades into a second render pass.
   useEffect(() => {
-    fetchRedlines()
-
-    function handleSubmitted() {
-      fetchRedlines()
+    let live = true
+    function fetchRedlines() {
+      fetch(apiUrl)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (!live || !json) return
+          setRedlines(json.data ?? [])
+          setCount(json.count ?? 0)
+        })
+        .catch(() => {
+          // API not available — silently degrade
+        })
     }
-    window.addEventListener('redline:submitted', handleSubmitted)
-    return () => window.removeEventListener('redline:submitted', handleSubmitted)
-  }, [fetchRedlines])
+    fetchRedlines()
+    window.addEventListener('redline:submitted', fetchRedlines)
+    return () => {
+      live = false
+      window.removeEventListener('redline:submitted', fetchRedlines)
+    }
+  }, [apiUrl, refresh])
 
   function handleNavigate(pageUrl: string) {
     setShowList(false)
@@ -95,7 +98,7 @@ export function RedlineSidebar({ isActive, onToggle, apiUrl = '/api/redlines' }:
         {count > 0 && (
           <button
             type="button"
-            onClick={() => { setShowList(!showList); if (!showList) fetchRedlines() }}
+            onClick={() => { setShowList(!showList); if (!showList) setRefresh((n) => n + 1) }}
             className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[10px] font-semibold text-white hover:bg-red-500 transition-colors"
           >
             {count}

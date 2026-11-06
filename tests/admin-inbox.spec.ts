@@ -468,3 +468,16 @@ test('To Review: actions are exactly Move to To Fix, Defer, Dismiss; Move to To 
   await expect(tab(page, 'To Fix')).toHaveText(/To Fix\s*1/)
   expect(store.get(mk(1).id)!.status).toBe('review')
 })
+
+test('a failed Undo that finishes after a tab switch reloads the tab now showing, never a stuck skeleton', async ({ page }) => {
+  const { store } = await markFixedFirst(page, { patchDelays: [0, 600] })
+  await expect(page.getByTestId('undo-bar')).toBeVisible()
+  // Someone else changes the item, so the Undo PATCH will 409
+  store.get(mk(1).id)!.status_updated_at = 'changed-elsewhere'
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await tab(page, 'Fixed').click()
+  await expect(page.getByTestId('undo-bar')).toContainText('Changed elsewhere')
+  await expect(page.locator('[data-skeleton]')).toHaveCount(0)
+  await expect(list(page).getByRole('button', { name: /Feedback 4/ })).toBeVisible()
+  expect(page.url()).toContain('status=fixed')
+})

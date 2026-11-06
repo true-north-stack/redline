@@ -95,6 +95,48 @@ function insideMasked(el: Element, selector: string): boolean {
   return false
 }
 
+let probe: CanvasRenderingContext2D | null | undefined
+
+/**
+ * How opaque a CSS color is, 0 to 1, as the browser paints it. Asking a 1x1 canvas
+ * handles every syntax (rgb, hsl, oklab, oklch, color(), color-mix) without parsing.
+ */
+function opacityOf(color: string): number {
+  if (!color || color === 'transparent') return 0
+  if (probe === undefined) {
+    probe = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+  }
+  if (!probe) return 1
+  probe.clearRect(0, 0, 1, 1)
+  // An unparseable color leaves fillStyle unchanged, so reset it first
+  probe.fillStyle = 'rgba(0, 0, 0, 0)'
+  probe.fillStyle = color
+  probe.fillRect(0, 0, 1, 1)
+  return probe.getImageData(0, 0, 1, 1).data[3] / 255
+}
+
+/**
+ * The background an element is seen against: the nearest fully opaque background
+ * on it or an ancestor, or white. A transparent heading on a white page is captured
+ * on white, and on a dark page on its dark background. Translucent layers in between
+ * (a faint card tint) are skipped rather than blended. For the whole document, the
+ * page color usually sits on body, so body is checked after html.
+ */
+export function backgroundBehind(el: Element): string {
+  const chain: Element[] = []
+  if (el === el.ownerDocument.documentElement) {
+    chain.push(el)
+    if (el.ownerDocument.body) chain.push(el.ownerDocument.body)
+  } else {
+    for (let node: Element | null = el; node; node = node.parentElement) chain.push(node)
+  }
+  for (const node of chain) {
+    const color = getComputedStyle(node).backgroundColor
+    if (opacityOf(color) >= 1) return color
+  }
+  return '#ffffff'
+}
+
 /**
  * Render root to a canvas with every masked element replaced by a solid black box
  * of the same size. Throws if any masked element wasn't redacted, so callers drop
@@ -121,7 +163,14 @@ export async function captureMasked(
   targets.forEach((t, i) => t.el.setAttribute(MARK, String(i)))
   try {
     const canvas = await domToCanvas(root, {
+      backgroundColor: backgroundBehind(root),
       ...options,
+      // modern-screenshot drops the root's own margins, and the copy it draws then
+      // falls back to the browser's defaults for that tag (h1, p, ul…), pushing the
+      // content down and clipping it. Pin the root copy's margins to zero.
+      onCloneNode: (cloned) => {
+        if (cloned.nodeType === Node.ELEMENT_NODE) (cloned as HTMLElement).style.setProperty('margin', '0', 'important')
+      },
       onCloneEachNode: (cloned) => {
         if (cloned.nodeType !== Node.ELEMENT_NODE) return
         const el = cloned as HTMLElement

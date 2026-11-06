@@ -26,6 +26,20 @@ export const DEFAULT_PHI_SELECTOR = '[data-phi]'
 export const DEFAULT_RETENTION_DAYS = 30
 export const DEFAULT_BUCKET = 'redline-screenshots'
 
+/**
+ * Size caps on what a tester can send. Feedback is untrusted input, written by anyone
+ * the host lets in, so every field is bounded here and again by the database.
+ */
+export const LIMITS = {
+  feedback: 5000,
+  element_text: 2000,
+  element_selector: 1000,
+  page_url: 2000,
+  user_agent: 512,
+  screenshotBytes: 8 * 1024 * 1024,
+  requestBytes: 10 * 1024 * 1024,
+} as const
+
 export function defineRedlineConfig(config: RedlineConfig): RedlineConfig {
   // The config file is also imported by the inspector for phiSelectors. Server-only
   // env vars are undefined in the browser anyway; strip the block so a misconfigured
@@ -34,7 +48,8 @@ export function defineRedlineConfig(config: RedlineConfig): RedlineConfig {
     if (config.supabase.secretKey) {
       console.error('[redline] Supabase secret key is visible in the browser. Use a server-only env var.')
     }
-    const { supabase: _server, ...clientSafe } = config
+    const clientSafe = { ...config }
+    delete clientSafe.supabase
     return clientSafe
   }
   return config

@@ -3,7 +3,7 @@
 
 import { randomUUID } from 'crypto'
 import type { RedlineConfig } from './redline-config'
-import { DEFAULT_RETENTION_DAYS, sanitizePageUrl } from './redline-config'
+import { DEFAULT_RETENTION_DAYS, LIMITS, sanitizePageUrl } from './redline-config'
 import type { RedlineItem, RedlineStore } from './redline-storage'
 
 /**
@@ -31,6 +31,46 @@ export function toNotificationSummary(item: RedlineItem): NotificationSummary {
     has_screenshot: item.screenshot_path !== null,
     ux_review_requested: item.ux_review_requested,
   }
+}
+
+
+const tooLarge = (field: string) => Response.json({ error: 'too_large', field }, { status: 413 })
+
+/** The request body, or null once it passes max bytes (the rest is never read). */
+async function readCapped(req: Request, max: number): Promise<ArrayBuffer | null> {
+  if (!req.body) return new ArrayBuffer(0)
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > max) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const c of chunks) {
+    out.set(c, at)
+    at += c.byteLength
+  }
+  return out.buffer
+}
+
+/** Cut to n UTF-16 units without leaving half of a surrogate pair (an emoji) at the end. */
+function cut(s: string, n: number): string {
+  if (s.length <= n) return s
+  const code = s.charCodeAt(n - 1)
+  return s.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n)
+}
+
+/** A file part from multipart form data. Checked by shape: Node 18 has no global File. */
+function isFilePart(v: unknown): v is File {
+  return typeof v === 'object' && v !== null && typeof (v as Blob).size === 'number' && typeof (v as Blob).arrayBuffer === 'function'
 }
 
 export interface FeedbackHandlerOptions {
@@ -66,31 +106,64 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
     const testerId = await getTesterId(req)
     if (isSupabase && !testerId) return new Response('Unauthorized', { status: 401 })
 
+    // A declared size over the cap is refused before reading; a body with no length
+    // (chunked) is counted as it streams and refused the moment it passes the cap
+    if (Number(req.headers.get('content-length')) > LIMITS.requestBytes) return tooLarge('request')
+    const raw = await readCapped(req, LIMITS.requestBytes)
+    if (!raw) return tooLarge('request')
+
     const id = randomUUID()
     const contentType = req.headers.get('content-type') ?? ''
+    const body = new Response(raw, { headers: { 'content-type': contentType } })
     let fields: Record<string, unknown>
-    let screenshot: File | null = null
+    let screenshot: unknown = null
 
-    if (contentType.includes('multipart/form-data')) {
-      // Multipart form data (with screenshot)
-      const formData = await req.formData()
-      fields = {
-        page_url: formData.get('page_url'),
-        element_selector: formData.get('element_selector'),
-        element_text: formData.get('element_text') || null,
-        feedback: formData.get('feedback'),
-        ux_review_requested: formData.get('ux_review_requested') === 'true',
+    try {
+      if (contentType.includes('multipart/form-data')) {
+        // Multipart form data (with screenshot)
+        const formData = await body.formData()
+        fields = {
+          page_url: formData.get('page_url'),
+          element_selector: formData.get('element_selector'),
+          element_text: formData.get('element_text') || null,
+          feedback: formData.get('feedback'),
+          ux_review_requested: formData.get('ux_review_requested') === 'true',
+        }
+        screenshot = formData.get('screenshot')
+      } else {
+        // JSON body (no screenshot)
+        const json = await body.json()
+        if (!json || typeof json !== 'object' || Array.isArray(json)) throw new Error('not an object')
+        fields = { ...json, ux_review_requested: json.ux_review_requested === true }
       }
-      screenshot = formData.get('screenshot') as File | null
-    } else {
-      // JSON body (no screenshot)
-      const body = await req.json()
-      fields = { ...body, ux_review_requested: body.ux_review_requested === true }
+    } catch {
+      return Response.json({ error: 'invalid body' }, { status: 400 })
+    }
+
+    // Text fields are strings or absent: anything else (an object, a file) is refused,
+    // so it can never slip past the length caps as "[object Object]"
+    for (const field of ['feedback', 'element_text', 'element_selector', 'page_url'] as const) {
+      const value = fields[field]
+      if (value != null && typeof value !== 'string') {
+        return Response.json({ error: 'invalid field', field }, { status: 400 })
+      }
+    }
+    if (screenshot != null && !isFilePart(screenshot)) {
+      return Response.json({ error: 'invalid field', field: 'screenshot' }, { status: 400 })
     }
 
     if (typeof fields.feedback !== 'string' || !fields.feedback.trim()) {
       return Response.json({ error: 'feedback is required' }, { status: 400 })
     }
+    // The tester types the note and chooses the screenshot, so those are refused when
+    // too large. The page URL, selector and element text are collected for them, so
+    // they are cut to size instead: refusing would leave the tester nothing to fix.
+    if (fields.feedback.length > LIMITS.feedback) return tooLarge('feedback')
+    if (screenshot && screenshot.size > LIMITS.screenshotBytes) return tooLarge('screenshot')
+    const pageUrl = cut(sanitizePageUrl((fields.page_url as string | null) ?? ''), LIMITS.page_url)
+    const selector = cut((fields.element_selector as string | null) ?? '', LIMITS.element_selector)
+    const rawText = (fields.element_text as string | null) || null
+    const elementText = rawText === null ? null : cut(rawText, LIMITS.element_text)
 
     const now = new Date()
     const retentionDays = config.retentionDays ?? DEFAULT_RETENTION_DAYS
@@ -100,9 +173,9 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
       const newRedline: RedlineItem = {
         id,
         // Re-sanitized here so query values and tokens never reach storage, even from old clients
-        page_url: sanitizePageUrl(String(fields.page_url ?? '')),
-        element_selector: String(fields.element_selector ?? ''),
-        element_text: (fields.element_text as string | null) || null,
+        page_url: pageUrl,
+        element_selector: selector,
+        element_text: elementText,
         feedback: fields.feedback,
         screenshot_path: screenshot ? await store.saveAttachment(id, screenshot) : null,
         // Tester feedback waits in To Review until the owner moves it to To Fix. In local
@@ -112,7 +185,7 @@ export function createFeedbackHandlers(o: FeedbackHandlerOptions) {
         ux_review_requested: fields.ux_review_requested === true,
         tester_id: testerId,
         app_version: config.appVersion || null,
-        user_agent: req.headers.get('user-agent'),
+        user_agent: cut(req.headers.get('user-agent') ?? '', LIMITS.user_agent) || null,
         expires_at: new Date(now.getTime() + retentionDays * 86_400_000).toISOString(),
       }
       await store.saveItem(newRedline)

@@ -44,10 +44,14 @@ test('update compares every installed component with the new release, never a fi
   expect(text).toContain('redline-mask.ts')
 })
 
-test('CHANGELOG has an unreleased 1.2.0 entry with an upgrade note; VERSION is not bumped', async () => {
+test('VERSION matches the newest released CHANGELOG entry, and 1.2.0 keeps its upgrade note', async () => {
   const log = await read('CHANGELOG.md')
-  expect(log).toMatch(/## 1\.2\.0 \(unreleased\)/)
+  const released = log.match(/^## (\d+\.\d+\.\d+) \(\d{4}-\d{2}-\d{2}\)$/m)
+  expect(released, 'a dated release heading').not.toBeNull()
+  expect((await read('VERSION')).trim()).toBe(released![1])
+  // An unreleased entry, if any, sits above the newest release
+  const unreleased = log.search(/^## \d+\.\d+\.\d+ \(unreleased\)$/m)
+  if (unreleased >= 0) expect(unreleased).toBeLessThan(released!.index!)
   expect(log).toContain('Upgrading from 1.1.x')
   expect(log).toContain('15.1')
-  expect((await read('VERSION')).trim()).toBe('1.1.2')
 })

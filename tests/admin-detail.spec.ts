@@ -39,9 +39,10 @@ test('screenshot opens in an in-page viewer and closes with Escape', async ({ pa
   await expect(dialog).toBeHidden()
 })
 
-test('no screenshot_url shows "Screenshot no longer available"', async ({ page }) => {
+test('an item sent without a screenshot says "No screenshot", not that one was lost', async ({ page }) => {
   await openAdmin(page, { view: 'detail', id: ID, items: [makeItem({ screenshot_path: null })] })
-  await expect(page.getByText('Screenshot no longer available')).toBeVisible()
+  await expect(page.getByText('No screenshot')).toBeVisible()
+  await expect(page.getByText('Screenshot no longer available')).toHaveCount(0)
 })
 
 test('expired screenshot refetches once, then gives up', async ({ page }) => {

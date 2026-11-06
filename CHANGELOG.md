@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.1 (unreleased)
+
+Fixes from the first host to run 1.2.0 end to end, The Freelancer Tool.
+
+- **Size caps on tester feedback.** The feedback route refuses a note over 5,000 characters, a screenshot over 8 MB or a request over 10 MB with a 413 that names the field. The request size is counted as the body streams, so leaving out Content-Length doesn't get around it. The page URL, selector and element text, which Redline collects rather than the tester, are cut to 2,000, 1,000 and 2,000 characters instead of refused. Text fields that aren't strings get a 400. A new migration, `redline_limits`, enforces the same caps in the table and lowers the screenshot bucket's limit to 8 MB. Rows saved before it that are longer are cut to the caps first, so every row can still change status. The note box stops at 5,000 characters.
+- **Clearer save errors.** A refused save now says what to do: shorten the note, untick Include Screenshot, or wait a few minutes after a 429 from the host's rate limit. Only errors that a retry can fix still say "Try again".
+- **Element screenshots look like the page.** A heading or paragraph with no background of its own was drawn on Redline's dark fill and pushed down by the browser's default margins, so it came out as a dark strip with its text cut off. Screenshots now use the background the element actually sits on, and the picked element's own margins no longer shift it.
+- **The inbox says "No screenshot"** for feedback sent without one. "Screenshot no longer available" is kept for screenshots that expired or failed to load.
+- **The components pass current Next.js lint.** `eslint-config-next` 16 adds the React Compiler hook rules, which flagged 14 errors in the copy-in files. All of them are fixed, so hosts can lint the files they vendor.
+- **README:** feedback text is untrusted input to the coding agent, return a tester id only for people you've let in, and rate limiting belongs in the host's route.
+
+### Upgrading from 1.2.0
+
+Re-run the install prompt from [AGENT-INSTALLATION.md](AGENT-INSTALLATION.md) to pick up the changed components, then apply the new `redline_limits` migration (renamed with a timestamp after your newest one). If your route wraps Redline's with its own caps, keep them; Redline's are an upper bound.
+
 ## 1.2.0 (2026-11-05)
 
 Redline can now collect feedback from testers on a deployed build, not only from your own machine. Local mode is still the default and works as before.
