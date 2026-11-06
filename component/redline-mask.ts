@@ -370,9 +370,9 @@ function redactClone(el: HTMLElement, t: Target) {
 
 // Boxes that start a new line in what the reader sees. Flex and grid items are reported
 // blockified by getComputedStyle, so their parent decides instead (see Row below).
-const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)$/
+const BLOCK_DISPLAY = /^(block|flex|grid|flow-root|list-item|-webkit-box|table|table-row|table-caption|table-row-group|table-header-group|table-footer-group)( |$)/
 // Side-by-side boxes that still need a gap between them
-const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)$/
+const SPACED_DISPLAY = /^(inline-block|inline-flex|inline-grid|inline-table|table-cell)( |$)/
 
 /**
  * The text of el as it reads on screen, with masked subtrees replaced by [redacted].
